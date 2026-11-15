@@ -18,7 +18,7 @@ the image, creates the IAM role, Lambda function, logs and HTTP API, wakes it on
 prints the **API URL** and **API key**. Put both in PoodPim (menu → Server URL & API key…)
 and share them only with your team. It is safe to re-run: existing pieces are reused and
 the key is kept. At most 3 requests run at once (`MAX_CONCURRENCY`, a cap on the bill if
-the key leaks). Takes about 5 minutes the first time.
+the key leaks).
 
 ```sh
 NAME=myteam-asr REGION=ap-southeast-1 ./deploy/lambda/deploy.sh     # update the code later
