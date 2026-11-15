@@ -1,5 +1,7 @@
 # PoodPim (พูดพิมพ์) — Thai push-to-talk dictation (macOS · Windows)
 
+<a href="https://openthai.ai/openthai2p0-asr-streaming?ref=powered-by" target="_blank" rel="noopener"><img src="https://openthai.ai/img/badges/powered-by-openthai-asr.svg?v=2" alt="Powered by OpenThai ASR" height="32"></a>
+
 Hold a key, speak Thai (or Thai mixed with English), let go, and the text is typed where
 your cursor is — in any app. Speech recognition runs locally on the CPU with
 [iapp/OpenThai2.0-ASR-Streaming-ONNX](https://huggingface.co/iapp/OpenThai2.0-ASR-Streaming-ONNX)
