@@ -1,0 +1,190 @@
+//! Microphone capture (any device rate, mixed to mono), resampling to 16 kHz,
+//! silence trimming, and WAV loading for testing.
+
+use std::io::{Cursor, Read, Seek};
+use std::path::Path;
+
+use anyhow::{Context, Result};
+
+use crate::features::SAMPLE_RATE;
+
+#[cfg(feature = "desktop")]
+pub use recorder::Recorder;
+
+#[cfg(feature = "desktop")]
+mod recorder {
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result, anyhow};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SizedSample};
+
+use super::resample;
+use crate::features::SAMPLE_RATE;
+
+pub struct Recorder {
+    stream: Option<cpal::Stream>,
+    buf: Arc<Mutex<Vec<f32>>>,
+    rate: u32,
+}
+
+impl Recorder {
+    pub fn new() -> Self {
+        Self { stream: None, buf: Arc::new(Mutex::new(Vec::new())), rate: SAMPLE_RATE }
+    }
+
+    pub fn start(&mut self) -> Result<()> {
+        let host = cpal::default_host();
+        let device = host.default_input_device().ok_or_else(|| anyhow!("no microphone found"))?;
+        let supported = device.default_input_config().context("microphone config")?;
+        let config = supported.config();
+        self.rate = config.sample_rate;
+        self.buf.lock().unwrap().clear();
+        let ch = config.channels as usize;
+        let stream = match supported.sample_format() {
+            cpal::SampleFormat::F32 => build::<f32>(&device, config, ch, self.buf.clone())?,
+            cpal::SampleFormat::I16 => build::<i16>(&device, config, ch, self.buf.clone())?,
+            cpal::SampleFormat::I32 => build::<i32>(&device, config, ch, self.buf.clone())?,
+            cpal::SampleFormat::U16 => build::<u16>(&device, config, ch, self.buf.clone())?,
+            f => return Err(anyhow!("unsupported microphone sample format {f:?}")),
+        };
+        stream.play()?;
+        self.stream = Some(stream);
+        Ok(())
+    }
+
+    /// The microphone's sample rate (the buffer is mono at this rate).
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// Runs `f` on the recording so far (mono, at `rate()`), without stopping it.
+    pub fn with_buffer<R>(&self, f: impl FnOnce(&[f32]) -> R) -> R {
+        f(&self.buf.lock().unwrap())
+    }
+
+    /// Stops recording and returns the whole recording (mono, at `rate()`).
+    pub fn stop_raw(&mut self) -> Vec<f32> {
+        self.stream = None; // dropping the stream stops it
+        std::mem::take(&mut *self.buf.lock().unwrap())
+    }
+
+    /// Stops recording and returns 16 kHz mono audio.
+    pub fn stop(&mut self) -> Vec<f32> {
+        let raw = self.stop_raw();
+        resample(&raw, self.rate, SAMPLE_RATE)
+    }
+}
+
+fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, ch: usize, buf: Arc<Mutex<Vec<f32>>>) -> Result<cpal::Stream>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let stream = device.build_input_stream::<T, _, _>(
+        config,
+        move |data: &[T], _| {
+            let mut b = buf.lock().unwrap();
+            for frame in data.chunks(ch) {
+                let s: f32 = frame.iter().map(|&v| f32::from_sample(v)).sum::<f32>() / ch as f32;
+                b.push(s);
+            }
+        },
+        |e| eprintln!("audio stream error: {e}"),
+        None,
+    )?;
+    Ok(stream)
+}
+}
+
+/// Windowed-sinc resampler (Hann window, 16 zero-crossings). Offline; fast enough for dictation clips.
+pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if from == to || input.is_empty() {
+        return input.to_vec();
+    }
+    let ratio = to as f64 / from as f64;
+    let cutoff = ratio.min(1.0) * 0.95;
+    let half = (16.0 / cutoff).ceil() as isize;
+    let out_len = (input.len() as f64 * ratio).floor() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for n in 0..out_len {
+        let t = n as f64 / ratio;
+        let center = t.floor() as isize;
+        let mut acc = 0.0f64;
+        for k in (center - half + 1)..=(center + half) {
+            if k < 0 || k as usize >= input.len() {
+                continue;
+            }
+            let d = t - k as f64;
+            let x = cutoff * d;
+            let sinc = if x.abs() < 1e-9 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
+            let w = 0.5 + 0.5 * (std::f64::consts::PI * d / half as f64).cos();
+            acc += input[k as usize] as f64 * cutoff * sinc * w;
+        }
+        out.push(acc as f32);
+    }
+    out
+}
+
+/// Cuts leading/trailing silence (20 ms frames below -45 dBFS), keeping 250 ms padding.
+pub fn trim_silence(audio: &[f32]) -> &[f32] {
+    let frame = (SAMPLE_RATE / 50) as usize;
+    let n = audio.len() / frame;
+    if n == 0 {
+        return audio;
+    }
+    let loud: Vec<usize> = (0..n)
+        .filter(|&i| {
+            let s = &audio[i * frame..(i + 1) * frame];
+            let rms = (s.iter().map(|v| v * v).sum::<f32>() / frame as f32 + 1e-12).sqrt();
+            20.0 * rms.log10() > -45.0
+        })
+        .collect();
+    let (Some(&first), Some(&last)) = (loud.first(), loud.last()) else {
+        return &audio[..0];
+    };
+    let pad = (SAMPLE_RATE as usize) / 4;
+    let start = (first * frame).saturating_sub(pad);
+    let end = ((last + 1) * frame + pad).min(audio.len());
+    &audio[start..end]
+}
+
+/// Loads a WAV file as 16 kHz mono f32.
+pub fn load_wav(path: &Path) -> Result<Vec<f32>> {
+    let f = std::io::BufReader::new(std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?);
+    read_wav(f)
+}
+
+/// Decodes WAV bytes (any rate / channels / PCM or float) to 16 kHz mono f32.
+pub fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>> {
+    read_wav(Cursor::new(bytes))
+}
+
+fn read_wav<R: Read + Seek>(reader: R) -> Result<Vec<f32>> {
+    let mut r = hound::WavReader::new(reader).context("not a WAV file")?;
+    let spec = r.spec();
+    let ch = spec.channels.max(1) as usize;
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => r.samples::<f32>().collect::<Result<_, _>>()?,
+        hound::SampleFormat::Int => {
+            let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            r.samples::<i32>().map(|s| s.map(|v| v as f32 / scale)).collect::<Result<_, _>>()?
+        }
+    };
+    let mono: Vec<f32> = samples.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect();
+    Ok(resample(&mono, spec.sample_rate, SAMPLE_RATE))
+}
+
+/// Encodes 16 kHz mono audio as 16-bit PCM WAV (32 kB per second) for upload.
+pub fn encode_wav(audio: &[f32]) -> Vec<u8> {
+    let spec = hound::WavSpec { channels: 1, sample_rate: SAMPLE_RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let mut buf = Cursor::new(Vec::with_capacity(44 + audio.len() * 2));
+    {
+        let mut w = hound::WavWriter::new(&mut buf, spec).expect("wav writer");
+        for &s in audio {
+            w.write_sample((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).expect("wav write");
+        }
+        w.finalize().expect("wav finalize");
+    }
+    buf.into_inner()
+}

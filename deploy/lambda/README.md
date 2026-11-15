@@ -1,0 +1,100 @@
+# Serverless backend (AWS Lambda, ap-southeast-7 / Bangkok)
+
+The desktop app can send audio to this instead of running the model locally
+(menu → **Serverless (AWS Lambda)**).
+
+```
+app ──HTTPS──▶ API Gateway HTTP API ──▶ Lambda thocr-asr (arm64, 4 GB, container image)
+                (throttled 5 rps, burst 10)        │ cold start: s5cmd pulls the int8 model
+                                                   ▼ from S3 into /tmp (~11 s), loads it (~2 s)
+                                             S3 thocr-models-<account>-ap-southeast-7/openthai-asr-int8/
+```
+
+Lambda Function URLs are not available in ap-southeast-7 yet, hence API Gateway
+(HTTP API, ~$1 per million requests; its integration timeout is 30 s).
+
+## Endpoints
+
+All need header `x-api-key` (the Lambda's `POODPIM_API_KEY` env var; the app keeps the
+same key in its config file, mode 600).
+
+| | |
+|---|---|
+| `POST /warm` | load the model if this instance is cold → `{"load_ms": n}` |
+| `POST /transcribe?mixed=1` | body: WAV ≤ 120 s → `{"text", "audio_s", "ms"}` (413 if longer) |
+
+The app sends ≤ 25 s segments cut at pauses (see the main README), so requests stay far
+below Lambda's 6 MB payload limit and API Gateway's 30 s timeout.
+
+The app calls `/warm` when the talk key goes down (so a cold start overlaps with
+speaking) and waits for it before sending audio: one Lambda instance serves one
+request at a time, so sending in parallel would start a second cold instance.
+
+## Measured (2026-11-15, from Bangkok)
+
+| | |
+|---|---|
+| cold start (`/warm`) | 13.6 s (S3 fetch 11.3 s, load + warm-up 1.7 s) |
+| 6 s sentence, warm | ~0.9 s round trip (Lambda 0.63 s) |
+| 32 s recording, warm | ~3.8 s |
+| memory used | ~2.1 GB of 4 GB |
+
+Why int8 here: the fp32 model (2.5 GB) took 32 s to fetch from S3 (Lambda's network
+tops out around 80 MB/s) and 37 s+ when baked into the image, past API Gateway's 30 s
+limit. int8 gave the same text as fp32 on all test clips except one dropped tone mark
+in a 32 s recording ("ส่วน" → "สวน"). The desktop app keeps fp32.
+
+## Resources (all tagged `Project=thocr`)
+
+The app was first called thocr. The AWS resources keep that name: renaming them means
+recreating them, which would change the server URL that every installed app points to.
+The deployed function's variables are still `THOCR_API_KEY` / `THOCR_MODEL_S3`; the code
+reads `POODPIM_*` first and falls back to `THOCR_*`.
+
+| Resource | Name |
+|---|---|
+| Lambda | `thocr-asr` (arm64, 4096 MB, timeout 120 s, /tmp 2048 MB) |
+| ECR repo | `thocr-asr` (lifecycle: keep last 2 images) |
+| S3 bucket | `thocr-models-<account>-ap-southeast-7`, prefix `openthai-asr-int8/` (private) |
+| IAM role | `thocr-lambda-role` (basic logs + read that S3 prefix) |
+| API Gateway | HTTP API `thocr-asr`, `$default` route/stage |
+| Logs | `/aws/lambda/thocr-asr`, 14-day retention |
+
+## Update the code
+
+```sh
+./deploy/lambda/deploy.sh      # build arm64 image, push to ECR, update the function
+```
+
+## Rotate the API key
+
+Generate a new key, put it in the Lambda's API key variable (`THOCR_API_KEY` on the
+function deployed today) with `aws lambda update-function-configuration … --environment …`,
+keeping the model variable (`THOCR_MODEL_S3`)
+and in the app (menu → Server URL & API key…, or `echo NEWKEY | poodpim server <url>`).
+
+## Tear down
+
+```sh
+R=ap-southeast-7
+API=$(aws apigatewayv2 get-apis --region $R --query "Items[?Name=='thocr-asr'].ApiId" --output text)
+aws apigatewayv2 delete-api --region $R --api-id $API
+aws lambda delete-function --region $R --function-name thocr-asr
+aws ecr delete-repository --region $R --repository-name thocr-asr --force
+B=thocr-models-$(aws sts get-caller-identity --query Account --output text)-$R
+aws s3 rb s3://$B --force --region $R
+aws iam delete-role-policy --role-name thocr-lambda-role --policy-name thocr-model-read
+aws iam detach-role-policy --role-name thocr-lambda-role --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+aws iam delete-role --role-name thocr-lambda-role
+aws logs delete-log-group --region $R --log-group-name /aws/lambda/thocr-asr
+```
+
+## Local test (no AWS)
+
+```sh
+docker buildx build --platform linux/arm64 --provenance=false --load -f deploy/lambda/Dockerfile -t thocr-asr:dev .
+docker run --rm -p 9000:8080 -e POODPIM_API_KEY=test -e POODPIM_MODEL_DIR=/model \
+  -v "$HOME/Library/Application Support/poodpim/openthai-asr:/model:ro" thocr-asr:dev
+python3 deploy/lambda/invoke_local.py test warm
+python3 deploy/lambda/invoke_local.py test transcribe tests/audio/th1.wav
+```
