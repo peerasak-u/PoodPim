@@ -3,11 +3,33 @@
 The desktop app can send audio to this instead of running the model locally
 (menu → **Serverless (AWS Lambda)**).
 
+## Set it up in your own AWS account
+
+For yourself or your team, one command. It needs the AWS CLI (logged in), Docker with
+buildx, curl, unzip and python3:
+
+```sh
+./deploy/lambda/setup.sh                                    # name poodpim-asr, Bangkok
+NAME=myteam-asr REGION=ap-southeast-1 ./deploy/lambda/setup.sh
 ```
-app ──HTTPS──▶ API Gateway HTTP API ──▶ Lambda thocr-asr (arm64, 4 GB, container image)
+
+It downloads the int8 model from Hugging Face into a private S3 bucket, builds and pushes
+the image, creates the IAM role, Lambda function, logs and HTTP API, wakes it once, and
+prints the **API URL** and **API key**. Put both in PoodPim (menu → Server URL & API key…)
+and share them only with your team. It is safe to re-run: existing pieces are reused and
+the key is kept. At most 3 requests run at once (`MAX_CONCURRENCY`, a cap on the bill if
+the key leaks). Takes about 5 minutes the first time.
+
+```sh
+NAME=myteam-asr REGION=ap-southeast-1 ./deploy/lambda/deploy.sh     # update the code later
+NAME=myteam-asr REGION=ap-southeast-1 ./deploy/lambda/teardown.sh   # remove everything
+```
+
+```
+app ──HTTPS──▶ API Gateway HTTP API ──▶ Lambda <name> (arm64, 4 GB, container image)
                 (throttled 5 rps, burst 10)        │ cold start: s5cmd pulls the int8 model
                                                    ▼ from S3 into /tmp (~11 s), loads it (~2 s)
-                                             S3 thocr-models-<account>-ap-southeast-7/openthai-asr-int8/
+                                             S3 <name>-models-<account>-<region>/openthai-asr-int8/
 ```
 
 Lambda Function URLs are not available in ap-southeast-7 yet, hence API Gateway
@@ -44,36 +66,32 @@ tops out around 80 MB/s) and 37 s+ when baked into the image, past API Gateway's
 limit. int8 gave the same text as fp32 on all test clips except one dropped tone mark
 in a 32 s recording ("ส่วน" → "สวน"). The desktop app keeps fp32.
 
-## Resources (all tagged `Project=thocr`)
-
-The app was first called thocr. The AWS resources keep that name: renaming them means
-recreating them, which would change the server URL that every installed app points to.
-The deployed function's variables are still `THOCR_API_KEY` / `THOCR_MODEL_S3`; the code
-reads `POODPIM_*` first and falls back to `THOCR_*`.
+## Resources made by setup.sh (all tagged `Project=<name>`)
 
 | Resource | Name |
 |---|---|
-| Lambda | `thocr-asr` (arm64, 4096 MB, timeout 120 s, /tmp 2048 MB) |
-| ECR repo | `thocr-asr` (lifecycle: keep last 2 images) |
-| S3 bucket | `thocr-models-<account>-ap-southeast-7`, prefix `openthai-asr-int8/` (private) |
-| IAM role | `thocr-lambda-role` (basic logs + read that S3 prefix) |
-| API Gateway | HTTP API `thocr-asr`, `$default` route/stage |
-| Logs | `/aws/lambda/thocr-asr`, 14-day retention |
-
-## Update the code
-
-```sh
-./deploy/lambda/deploy.sh      # build arm64 image, push to ECR, update the function
-```
+| Lambda | `<name>` (arm64, 4096 MB, timeout 120 s, /tmp 2048 MB), env `POODPIM_API_KEY`, `POODPIM_MODEL_S3` |
+| ECR repo | `<name>` (lifecycle: keep last 2 images) |
+| S3 bucket | `<name>-models-<account>-<region>`, prefix `openthai-asr-int8/` (private) |
+| IAM role | `<name>-lambda-role` (basic logs + read that S3 prefix) |
+| API Gateway | HTTP API `<name>`, `$default` route/stage, throttled 5 rps, burst 10 |
+| Logs | `/aws/lambda/<name>`, 14-day retention |
 
 ## Rotate the API key
 
-Generate a new key, put it in the Lambda's API key variable (`THOCR_API_KEY` on the
-function deployed today) with `aws lambda update-function-configuration … --environment …`,
-keeping the model variable (`THOCR_MODEL_S3`)
+Generate a new key, put it in the function's `POODPIM_API_KEY` with
+`aws lambda update-function-configuration … --environment …` (keep `POODPIM_MODEL_S3`),
 and in the app (menu → Server URL & API key…, or `echo NEWKEY | poodpim server <url>`).
 
-## Tear down
+## The original deployment (thocr-asr)
+
+The app was first called thocr, and the first deployment was built by hand before
+setup.sh existed. Its resources keep that name: renaming them means recreating them,
+which would change the server URL that every installed app points to. Its function uses
+`THOCR_API_KEY` / `THOCR_MODEL_S3` (the code reads `POODPIM_*` first and falls back to
+`THOCR_*`), its bucket is `thocr-models-<account>-ap-southeast-7` and its role is
+`thocr-lambda-role`, so teardown.sh does not fit it. Update its code with
+`NAME=thocr-asr ./deploy/lambda/deploy.sh`; remove it by hand:
 
 ```sh
 R=ap-southeast-7
