@@ -27,6 +27,8 @@ use crate::pipeline::{Outcome, Pipeline};
 use crate::overlay::{Overlay, Phase};
 use crate::platform::{self, HotkeyEvent, TALK_KEY_LABEL};
 use crate::segment::Segmenter;
+use crate::corrections::{self, Corrections};
+use crate::hotwords::{self, Hotwords};
 use crate::{inserter, model, update};
 
 const TAP: Duration = Duration::from_millis(300);
@@ -60,8 +62,16 @@ enum UserEvent {
     /// Result of "Check for updates…".
     UpdateChecked(Result<Option<String>, String>),
     UpdateAnswer(String, bool),
+    /// The new version is in place (Windows) or its installer has started (macOS).
+    UpdateInstalled(Result<(), String>),
     /// None: cancelled; Some(delete the model too).
     UninstallAnswer(Option<bool>),
+    /// From "Add correction…": (heard, wanted), or None if cancelled.
+    CorrectionAnswer(Option<(String, String)>),
+    /// Answer to "replace the old model with the smaller one?".
+    ModelUpgradeAnswer(bool),
+    ModelUpgradeProgress(u64, u64),
+    ModelUpgradeDone(Result<(), String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,6 +93,9 @@ struct Ui {
     lambda: CheckMenuItem,
     server_settings: MenuItem,
     mixed: CheckMenuItem,
+    vocabulary: MenuItem,
+    corrections: MenuItem,
+    add_correction: MenuItem,
     restore: CheckMenuItem,
     autostart: CheckMenuItem,
     paste_last: MenuItem,
@@ -123,10 +136,25 @@ struct App {
     pending_update: Option<String>,
     /// Already offered by the daily check this session (not asked again until the next launch).
     offered_update: Option<String>,
-    /// Quit at the end of this event (an update or uninstall script has taken over).
+    /// An update is being downloaded and put in place.
+    updating: bool,
+    /// The update is in place: restart into it once the user isn't recording.
+    restart_pending: bool,
+    /// Quit at the end of this event (an update or uninstall has taken over).
     quit: bool,
     /// Held while running so a second copy of the app can tell.
     _instance_lock: std::fs::File,
+    /// The user's word list (hotwords::user_file), reloaded when the file changes.
+    vocabulary: Arc<Hotwords>,
+    vocabulary_header: Arc<String>,
+    vocabulary_modified: Option<std::time::SystemTime>,
+    /// Replacements applied before pasting (corrections::user_file), reloaded when it changes.
+    corrections: Corrections,
+    corrections_modified: Option<std::time::SystemTime>,
+    /// The smaller model is being downloaded / is ready to replace the loaded one.
+    model_upgrading: bool,
+    model_swap_pending: bool,
+    remove_fp32_after_load: bool,
 }
 
 /// Locks a file in the settings folder; None if another copy of the app holds it.
@@ -167,7 +195,19 @@ pub(crate) fn said(text: &str) -> &str {
 pub fn run() -> Result<()> {
     log_to_file();
     eprintln!("PoodPim {} ({} {})", update::CURRENT, std::env::consts::OS, std::env::consts::ARCH);
-    let Some(instance_lock) = single_instance() else {
+    update::clean_up_after_update();
+    // Just updated: the old copy is still quitting, so wait for its lock rather than report it.
+    let mut lock = single_instance();
+    if std::env::var_os(update::UPDATED_ENV).is_some() {
+        for _ in 0..75 {
+            if lock.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            lock = single_instance();
+        }
+    }
+    let Some(instance_lock) = lock else {
         // Opened again while running (often because the menu-bar icon is hidden): say so.
         platform::alert(platform::ALREADY_RUNNING);
         return Ok(());
@@ -210,9 +250,20 @@ pub fn run() -> Result<()> {
         announced: false,
         pending_update: None,
         offered_update: None,
+        updating: false,
+        restart_pending: false,
         quit: false,
         _instance_lock: instance_lock,
+        vocabulary: Arc::new(Hotwords::default()),
+        vocabulary_header: Arc::new(String::new()),
+        vocabulary_modified: None,
+        corrections: Corrections::default(),
+        corrections_modified: None,
+        model_upgrading: false,
+        model_swap_pending: false,
+        remove_fp32_after_load: false,
     };
+    app.reload_vocabulary();
     let mut ui: Option<Ui> = None;
 
     event_loop.run(move |event, _, control_flow| {
@@ -243,8 +294,11 @@ pub fn run() -> Result<()> {
                 // First launch in Local mode: ask about the model now, not on the first key press.
                 if app.state == State::NeedsModel {
                     app.offer_download();
-                } else if app.state == State::Idle {
-                    app.announce_ready();
+                } else if app.state == State::Idle || app.state == State::Loading {
+                    if app.state == State::Idle {
+                        app.announce_ready();
+                    }
+                    app.offer_model_upgrade();
                 }
                 if update::supported() {
                     let p = proxy.clone();
@@ -275,6 +329,14 @@ pub fn run() -> Result<()> {
                         app.switch_backend(Backend::Lambda);
                     } else if id == ui.server_settings.id() {
                         app.open_server_settings();
+                    } else if id == ui.vocabulary.id() {
+                        app.reload_vocabulary(); // creates the file on first use
+                        platform::open_in_editor(&hotwords::user_file());
+                    } else if id == ui.add_correction.id() {
+                        app.ask_correction();
+                    } else if id == ui.corrections.id() {
+                        app.reload_vocabulary();
+                        platform::open_in_editor(&corrections::user_file());
                     } else if id == ui.mixed.id() {
                         app.cfg.mixed_english = ui.mixed.is_checked();
                         app.cfg.save();
@@ -326,10 +388,13 @@ fn build_ui(cfg: &Config) -> Ui {
     let lambda = CheckMenuItem::new("Serverless (AWS Lambda)", true, cfg.backend == Backend::Lambda, None);
     let server_settings = MenuItem::new("Server URL && API key…", true, None);
     let mixed = CheckMenuItem::new("Thai + English (mixed)", true, cfg.mixed_english, None);
+    let vocabulary = MenuItem::new("My vocabulary…", true, None);
+    let corrections = MenuItem::new("Word corrections…", true, None);
+    let add_correction = MenuItem::new("Add correction…", true, None);
     let restore = CheckMenuItem::new("Restore clipboard after paste", true, cfg.restore_clipboard, None);
     let autostart = CheckMenuItem::new("Start at login", true, cfg.start_at_login, None);
     let paste_last = MenuItem::new("Paste last transcript", false, None);
-    let download = MenuItem::new("Download model (2.6 GB)", false, None);
+    let download = MenuItem::new("Download model (1 GB)", false, None);
     let hint = MenuItem::new(format!("Hold {TALK_KEY_LABEL} to talk · tap = hands-free · Esc = cancel"), false, None);
     let permission = MenuItem::new("Open Accessibility settings…", false, None);
     let version = MenuItem::new(format!("PoodPim {}", update::CURRENT), false, None);
@@ -339,7 +404,7 @@ fn build_ui(cfg: &Config) -> Ui {
     let menu = Menu::new();
     let seps: Vec<PredefinedMenuItem> = (0..5).map(|_| PredefinedMenuItem::separator()).collect();
     menu.append_items(&[
-        &status, &permission, &seps[0], &local, &lambda, &server_settings, &seps[1], &mixed, &restore, &autostart, &paste_last, &download,
+        &status, &permission, &seps[0], &local, &lambda, &server_settings, &seps[1], &mixed, &vocabulary, &corrections, &add_correction, &restore, &autostart, &paste_last, &download,
         &seps[2], &hint, &seps[3],
     ])
     .expect("menu");
@@ -357,7 +422,7 @@ fn build_ui(cfg: &Config) -> Ui {
         builder.with_icon(icon)
     };
     let tray = builder.build().expect("tray icon");
-    Ui { tray, status, local, lambda, server_settings, mixed, restore, autostart, paste_last, download, permission, check_update, uninstall, quit }
+    Ui { tray, status, local, lambda, server_settings, mixed, vocabulary, corrections, add_correction, restore, autostart, paste_last, download, permission, check_update, uninstall, quit }
 }
 
 impl App {
@@ -448,7 +513,7 @@ impl App {
         let p = self.proxy.clone();
         std::thread::spawn(move || {
             let yes = platform::confirm(
-                "ยังไม่มีโมเดลถอดเสียงในเครื่องนี้\n\nโหมด Local ต้องดาวน์โหลดโมเดลก่อน ขนาด 2.6 GB (ครั้งเดียว) \
+                "ยังไม่มีโมเดลถอดเสียงในเครื่องนี้\n\nโหมด Local ต้องดาวน์โหลดโมเดลก่อน ขนาด 1 GB (ครั้งเดียว) \
                  ระหว่างดาวน์โหลดดูความคืบหน้าได้ในเมนู 🎙\n\nหรือเลือก Serverless ในเมนูเพื่อถอดเสียงบนเซิร์ฟเวอร์แทน\n\nดาวน์โหลดเลยไหม?",
                 "ดาวน์โหลด",
                 "ไว้ทีหลัง",
@@ -539,6 +604,15 @@ impl App {
                         self.state = State::Idle;
                         self.status_text = self.ready_text();
                         self.announce_ready();
+                        // The int8 model loaded fine: the 2.4 GB full-precision one, left from before
+                        // 1.0.2 or from a switch that didn't finish, can go (remove_fp32 only acts
+                        // when the int8 model is there).
+                        let dir = model::model_dir();
+                        self.remove_fp32_after_load = false;
+                        if dir.join("encoder.onnx.data").exists() && !model::is_fp32_only(&dir) {
+                            model::remove_fp32(&dir);
+                            eprintln!("using the int8 model; removed the fp32 one");
+                        }
                     }
                     Err(e) => self.fail(&e),
                 }
@@ -630,9 +704,10 @@ impl App {
                     );
                 }
                 if !out.text.is_empty() {
-                    eprintln!("{:.1}s in {} segment(s): {}", out.audio_s, out.segments, said(&out.text));
-                    self.last_text = out.text.clone();
-                    self.paste(out.text);
+                    let text = corrections::space_thai_latin(&self.corrections.apply(&out.text));
+                    eprintln!("{:.1}s in {} segment(s): {}", out.audio_s, out.segments, said(&text));
+                    self.last_text = text.clone();
+                    self.paste(text);
                     self.overlay.set(Phase::Done);
                 } else if !out.errors.is_empty() {
                     self.overlay.set(Phase::Failed);
@@ -661,23 +736,163 @@ impl App {
                     self.pending_update = Some(tag); // ask again when the recording is done
                     return;
                 }
-                match update::start_install(&tag) {
-                    Ok(()) => {
-                        eprintln!("updating to {tag}");
-                        self.quit = true;
+                if self.updating {
+                    return;
+                }
+                self.updating = true;
+                eprintln!("updating to {tag}");
+                if !self.busy() {
+                    self.status_text = format!("Downloading PoodPim {}…", tag.trim_start_matches('v'));
+                }
+                let p = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let r = update::install(&tag).map_err(|e| format!("{e:#}"));
+                    let _ = p.send_event(UserEvent::UpdateInstalled(r));
+                });
+            }
+            UserEvent::UpdateInstalled(r) => {
+                self.updating = false;
+                match r {
+                    Ok(()) => self.restart_pending = true,
+                    Err(e) => {
+                        eprintln!("update failed: {e}");
+                        if !self.busy() {
+                            self.status_text = self.ready_text();
+                        }
+                        show_alert(format!("อัปเดตไม่ได้: {e}"));
                     }
-                    Err(e) => show_alert(format!("อัปเดตไม่ได้: {e:#}")),
                 }
             }
             UserEvent::UninstallAnswer(answer) => {
                 self.dialog_open = false;
                 let Some(delete_model) = answer else { return };
-                match update::start_uninstall(delete_model) {
-                    Ok(()) => self.quit = true,
-                    Err(e) => show_alert(format!("ถอนการติดตั้งไม่ได้: {e:#}")),
+                match update::uninstall(delete_model) {
+                    Ok(()) => {
+                        // macOS: uninstall.sh finishes once this app has quit. Windows: done.
+                        #[cfg(windows)]
+                        platform::alert("ลบ PoodPim ออกจากเครื่องแล้ว");
+                        self.quit = true;
+                    }
+                    Err(e) => {
+                        platform::alert(&format!("ถอนการติดตั้งไม่สำเร็จทั้งหมด: {e:#}"));
+                        // Windows has removed what it could, the app included: don't keep running.
+                        self.quit = cfg!(windows);
+                    }
+                }
+            }
+            UserEvent::CorrectionAnswer(answer) => {
+                self.dialog_open = false;
+                let Some((heard, wanted)) = answer else { return };
+                match corrections::add_to_user_file(&heard, &wanted) {
+                    Ok(()) => {
+                        self.reload_vocabulary();
+                        eprintln!("added a correction");
+                    }
+                    Err(e) => show_alert(format!("บันทึกไม่ได้: {e}")),
+                }
+            }
+            UserEvent::ModelUpgradeAnswer(yes) => {
+                self.dialog_open = false;
+                if !yes {
+                    self.cfg.model_upgrade_declined = true;
+                    self.cfg.save();
+                    return;
+                }
+                self.model_upgrading = true;
+                let p = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let last = std::cell::Cell::new(Instant::now());
+                    let r = model::download(&model::model_dir(), &|done, total| {
+                        if last.get().elapsed() > Duration::from_millis(500) {
+                            last.set(Instant::now());
+                            let _ = p.send_event(UserEvent::ModelUpgradeProgress(done, total));
+                        }
+                    });
+                    let _ = p.send_event(UserEvent::ModelUpgradeDone(r.map_err(|e| format!("{e:#}"))));
+                });
+            }
+            UserEvent::ModelUpgradeProgress(done, total) => {
+                if !self.busy() {
+                    self.status_text =
+                        format!("Downloading the smaller model… {:.1} / {:.1} GB", done as f64 / 1e9, total as f64 / 1e9);
+                }
+            }
+            UserEvent::ModelUpgradeDone(r) => {
+                self.model_upgrading = false;
+                match r {
+                    Ok(()) => self.model_swap_pending = true, // when the user isn't recording
+                    Err(e) => {
+                        eprintln!("model upgrade: {e}");
+                        if !self.busy() {
+                            self.status_text = self.ready_text();
+                        }
+                    }
                 }
             }
             UserEvent::Menu(_) => {}
+        }
+    }
+
+    /// Versions before 1.0.2 downloaded the full-precision model (2.6 GB of RAM). Offers once
+    /// to replace it with the int8 one (1 GB of RAM, as accurate on tools/asr-eval).
+    fn offer_model_upgrade(&mut self) {
+        if self.cfg.backend != Backend::Local
+            || self.cfg.model_upgrade_declined
+            || self.model_upgrading
+            || self.dialog_open
+            || !model::is_fp32_only(&model::model_dir())
+        {
+            return;
+        }
+        self.dialog_open = true;
+        let p = self.proxy.clone();
+        std::thread::spawn(move || {
+            let yes = platform::confirm(
+                "PoodPim มีโมเดลถอดเสียงรุ่นใหม่ที่ใช้หน่วยความจำน้อยลงราว 60% (1 GB แทน 2.6 GB) \
+                 ถอดเร็วขึ้น และแม่นเท่าเดิม\n\nดาวน์โหลด 1 GB (ระหว่างนี้ใช้งานได้ตามปกติ) \
+                 แล้วลบรุ่นเดิมเพื่อคืนพื้นที่ 2.4 GB?",
+                "ดาวน์โหลด",
+                "ไว้ทีหลัง",
+            );
+            let _ = p.send_event(UserEvent::ModelUpgradeAnswer(yes));
+        });
+    }
+
+    /// Two prompts: the word as it came out, then as it should be; appended to the corrections.
+    fn ask_correction(&mut self) {
+        if self.dialog_open {
+            return;
+        }
+        self.dialog_open = true;
+        let p = self.proxy.clone();
+        std::thread::spawn(move || {
+            let answer = platform::ask_text(
+                "แก้คำ (1/2): คำที่ PoodPim พิมพ์ออกมาผิด\nเช่น ฟีดแบ็ก หรือ depop\n(ได้ยินผิดหลายแบบ คั่นด้วยจุลภาค ,)",
+                "",
+            )
+            .and_then(|heard| {
+                let wanted = platform::ask_text(&format!("แก้คำ (2/2): ให้เขียน \"{heard}\" เป็นอะไร\nเช่น feedback หรือ DevOps"), "")?;
+                Some((heard, wanted))
+            });
+            let _ = p.send_event(UserEvent::CorrectionAnswer(answer));
+        });
+    }
+
+    /// Reads the word list and the corrections again if their files changed (they are edited
+    /// in a text editor). Creates them on first use.
+    fn reload_vocabulary(&mut self) {
+        let modified = std::fs::metadata(hotwords::user_file()).and_then(|m| m.modified()).ok();
+        if modified.is_none() || modified != self.vocabulary_modified {
+            let (text, modified) = hotwords::read_user_list();
+            self.vocabulary = Arc::new(Hotwords::new(&text));
+            self.vocabulary_header = Arc::new(hotwords::to_header(&text));
+            self.vocabulary_modified = modified;
+        }
+        let modified = std::fs::metadata(corrections::user_file()).and_then(|m| m.modified()).ok();
+        if modified.is_none() || modified != self.corrections_modified {
+            let (text, modified) = corrections::read_user_list();
+            self.corrections = Corrections::new(&text);
+            self.corrections_modified = modified;
         }
     }
 
@@ -697,8 +912,26 @@ impl App {
     }
 
     /// Asks about a newer release, unless the user is busy or another dialog is open (then later).
+    /// Also restarts into an installed update once the user isn't recording.
     fn offer_pending_update(&mut self) {
         if self.busy() || self.dialog_open {
+            return;
+        }
+        if self.restart_pending {
+            self.restart_pending = false;
+            match update::restart() {
+                Ok(()) => self.quit = true,
+                Err(e) => show_alert(format!("เปิด PoodPim เวอร์ชันใหม่ไม่ได้ กรุณาเปิดเอง: {e:#}")),
+            }
+            return;
+        }
+        if self.model_swap_pending && self.cfg.backend == Backend::Local {
+            // Load the int8 model in place of the full-precision one.
+            self.model_swap_pending = false;
+            self.remove_fp32_after_load = true;
+            self.asr = None;
+            self.load_gen += 1;
+            self.start_loading();
             return;
         }
         let Some(tag) = self.pending_update.take() else { return };
@@ -836,12 +1069,14 @@ impl App {
     /// Sets up the segmenter and the background transcription worker for a new recording.
     fn start_pipeline(&mut self) {
         self.rec_gen += 1;
+        self.reload_vocabulary();
         self.segmenter = Some(Segmenter::new(self.recorder.rate()));
         let mixed = self.cfg.mixed_english;
         self.pipeline = Some(match self.cfg.backend {
             Backend::Local => {
                 let asr = self.asr.clone().expect("model loaded in Idle state");
-                Pipeline::start(move |a: &[f32]| asr.lock().unwrap().transcribe(a, mixed), None)
+                let vocabulary = self.vocabulary.clone();
+                Pipeline::start(move |a: &[f32]| asr.lock().unwrap().transcribe(a, mixed, &vocabulary), None)
             }
             Backend::Lambda => {
                 let stale = self.last_server_ok.is_none_or(|t| t.elapsed() > ASSUME_WARM);
@@ -851,7 +1086,8 @@ impl App {
                 // Segments wait for the wake-up call: one Lambda instance serves one request at a
                 // time, so sending earlier would start a second, cold instance.
                 let server = self.cfg.server();
-                Pipeline::start(move |a: &[f32]| server.transcribe(a, mixed), self.warm.take())
+                let vocabulary = self.vocabulary_header.clone();
+                Pipeline::start(move |a: &[f32]| server.transcribe(a, mixed, &vocabulary), self.warm.take())
             }
         });
     }

@@ -173,6 +173,11 @@ pub fn set_autostart(enable: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Opens a text file in TextEdit.
+pub fn open_in_editor(path: &std::path::Path) {
+    let _ = std::process::Command::new("open").arg("-t").arg(path).spawn();
+}
+
 /// Opens System Settings › Privacy & Security › Accessibility.
 pub fn open_permission_settings() {
     let _ = std::process::Command::new("open")
@@ -214,6 +219,12 @@ pub fn confirm(message: &str, ok: &str, cancel: &str) -> bool {
         return false;
     };
     out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == ok
+}
+
+/// A one-line text prompt. None if cancelled or left empty.
+pub fn ask_text(message: &str, default: &str) -> Option<String> {
+    let t = osascript_prompt(message, default, false)?.trim().to_string();
+    (!t.is_empty()).then_some(t)
 }
 
 fn osascript_prompt(message: &str, default: &str, hidden: bool) -> Option<String> {

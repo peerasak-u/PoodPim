@@ -18,11 +18,16 @@ const USAGE: &str = "poodpim — Thai push-to-talk dictation
 
 USAGE:
   poodpim                         start the tray / menu-bar app
-  poodpim transcribe <wav>... [--thai-only] [--server] [--live]
+  poodpim transcribe <wav>... [--thai-only] [--server] [--live] [--vocabulary FILE | --no-vocabulary]
+                               [--corrections FILE]
                                 --server: send to the configured Lambda instead of the local model
                                 --live:   feed the file in real time like the microphone and report
                                           the wait after release
-  poodpim download [--check]      download the OpenThai ASR model (~2.6 GB)
+                                --vocabulary: word list to favour (default: the app's, see
+                                          `poodpim config`); --no-vocabulary: plain decoding
+                                --corrections: replacements to apply to the text (the app uses
+                                          the user's corrections file; the CLI only this one)
+  poodpim download [--check]      download the OpenThai ASR model (~1 GB)
   poodpim backend local|lambda    choose where speech is transcribed
   poodpim server <url>            set the Lambda Function URL; reads the API key from stdin
   poodpim config                  show settings (API key hidden)
@@ -74,6 +79,9 @@ fn main() -> Result<()> {
             show_config(&Config::load());
             Ok(())
         }
+        // Settings > Apps > PoodPim > Uninstall (the registry entry points here).
+        #[cfg(windows)]
+        Some("--uninstall") => uninstall(),
         Some("-h" | "--help" | "help") => {
             println!("{USAGE}");
             Ok(())
@@ -88,13 +96,38 @@ fn show_config(cfg: &Config) {
     println!("backend:    {:?}", cfg.backend);
     println!("server_url: {}", if cfg.server_url.is_empty() { "(not set)" } else { &cfg.server_url });
     println!("api_key:    {key}");
+    println!("vocabulary: {}", poodpim::hotwords::user_file().display());
+    println!("corrections: {}", poodpim::corrections::user_file().display());
 }
 
 fn transcribe(args: &[String]) -> Result<()> {
     let thai_only = args.iter().any(|a| a == "--thai-only");
     let use_server = args.iter().any(|a| a == "--server");
     let live = args.iter().any(|a| a == "--live");
-    let files: Vec<PathBuf> = args.iter().filter(|a| !a.starts_with("--")).map(PathBuf::from).collect();
+    let vocab_file = args.iter().position(|a| a == "--vocabulary").and_then(|i| args.get(i + 1)).cloned();
+    let vocab_text = if args.iter().any(|a| a == "--no-vocabulary") {
+        String::new()
+    } else if let Some(f) = &vocab_file {
+        std::fs::read_to_string(f).map_err(|e| anyhow!("reading {f}: {e}"))?
+    } else {
+        poodpim::hotwords::read_user_list().0
+    };
+    let vocabulary = Arc::new(poodpim::hotwords::Hotwords::new(&vocab_text));
+    let vocab_header = poodpim::hotwords::to_header(&vocab_text);
+    let fixes = match args.iter().position(|a| a == "--corrections").and_then(|i| args.get(i + 1)) {
+        Some(f) => poodpim::corrections::Corrections::new(&std::fs::read_to_string(f).map_err(|e| anyhow!("reading {f}: {e}"))?),
+        None => poodpim::corrections::Corrections::default(),
+    };
+    // Everything that isn't a flag (or the file after --vocabulary) is an audio file.
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--vocabulary" || a == "--corrections" {
+            it.next();
+        } else if !a.starts_with("--") {
+            files.push(PathBuf::from(a));
+        }
+    }
     if files.is_empty() {
         return Err(anyhow!("no input files\n\n{USAGE}"));
     }
@@ -106,8 +139,8 @@ fn transcribe(args: &[String]) -> Result<()> {
         let load_ms = server.warm()?;
         eprintln!("warm: {:.2}s round trip (server model load {load_ms} ms)", t0.elapsed().as_secs_f32());
         Box::new(move || {
-            let s = server.clone();
-            Pipeline::start(move |a: &[f32]| s.transcribe(a, mixed), None)
+            let (s, h) = (server.clone(), vocab_header.clone());
+            Pipeline::start(move |a: &[f32]| s.transcribe(a, mixed, &h), None)
         })
     } else {
         let dir = model::model_dir();
@@ -118,8 +151,8 @@ fn transcribe(args: &[String]) -> Result<()> {
         let asr = Arc::new(Mutex::new(asr::OpenThaiAsr::load(&dir)?));
         eprintln!("loaded model in {:.1}s", t0.elapsed().as_secs_f32());
         Box::new(move || {
-            let a = asr.clone();
-            Pipeline::start(move |x: &[f32]| a.lock().unwrap().transcribe(x, mixed), None)
+            let (a, v) = (asr.clone(), vocabulary.clone());
+            Pipeline::start(move |x: &[f32]| a.lock().unwrap().transcribe(x, mixed, &v), None)
         })
     };
     for f in files {
@@ -154,11 +187,31 @@ fn transcribe(args: &[String]) -> Result<()> {
             out.segments,
             if live { "after release " } else { "" },
             wait.as_secs_f32(),
-            out.text
+            poodpim::corrections::space_thai_latin(&fixes.apply(&out.text))
         );
         for e in &out.errors {
             eprintln!("segment error: {e}");
         }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn uninstall() -> Result<()> {
+    use poodpim::{platform, update};
+    if !platform::confirm("ลบ PoodPim ออกจากเครื่องนี้?\n\nจะลบโปรแกรม การตั้งค่า และการเปิดเองตอนเปิดเครื่อง", "OK", "Cancel") {
+        return Ok(());
+    }
+    let delete_model = model::is_ready(&model::model_dir())
+        && platform::confirm(
+            "ลบโมเดลถอดเสียง (2.4 GB) ด้วยไหม?\n\nกด OK = ลบ, Cancel = เก็บไว้ (ติดตั้งใหม่ภายหลังจะไม่ต้องดาวน์โหลดซ้ำ)",
+            "OK",
+            "Cancel",
+        );
+    platform::stop_other_copies();
+    match update::uninstall(delete_model) {
+        Ok(()) => platform::alert("ลบ PoodPim ออกจากเครื่องแล้ว"),
+        Err(e) => platform::alert(&format!("ถอนการติดตั้งไม่สำเร็จทั้งหมด: {e:#}")),
     }
     Ok(())
 }
