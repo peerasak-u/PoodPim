@@ -83,11 +83,12 @@ pub struct Overlay {
     view: Option<sys::View>,
 }
 
-/// How much of the text being said the pill shows (its end, which is what changes).
-const PREVIEW_CHARS: usize = 42;
+/// How much of the text being said the pill is given (its end, which is what changes). More than
+/// fits: the pill shows the end and fades out the start at its left edge.
+const PREVIEW_CHARS: usize = 64;
 
-/// The last PREVIEW_CHARS characters of `text`, after "…" if cut; never starting on a Thai
-/// vowel sign or tone mark, which belong to the letter before them.
+/// The last PREVIEW_CHARS characters of `text`; never starting on a Thai vowel sign or tone mark,
+/// which belong to the letter before them.
 fn preview_tail(text: &str) -> String {
     let text = text.trim();
     let chars: Vec<char> = text.chars().collect();
@@ -98,7 +99,7 @@ fn preview_tail(text: &str) -> String {
     while from < chars.len() && matches!(chars[from], '\u{0E31}' | '\u{0E34}'..='\u{0E3A}' | '\u{0E47}'..='\u{0E4E}') {
         from += 1;
     }
-    std::iter::once('…').chain(chars[from..].iter().copied()).collect()
+    chars[from..].iter().collect()
 }
 
 #[cfg(test)]
@@ -106,9 +107,9 @@ mod tests {
     #[test]
     fn preview_shows_the_end_without_a_loose_mark() {
         assert_eq!(super::preview_tail(" สวัสดีครับ "), "สวัสดีครับ");
-        // 44 chars: the cut falls on ่ (the 3rd), which must not start the tail.
-        let long = format!("ที่{}", "ก".repeat(41));
-        assert_eq!(super::preview_tail(&long), format!("…{}", "ก".repeat(41)));
+        // 66 chars: the cut falls on ่ (the 3rd), which must not start the tail.
+        let long = format!("ที่{}", "ก".repeat(63));
+        assert_eq!(super::preview_tail(&long), "ก".repeat(63));
     }
 }
 
@@ -261,23 +262,32 @@ mod mac {
     use objc2::{MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
         NSBackingStoreType, NSBox, NSBoxType, NSColor, NSFont, NSFontWeightMedium, NSPanel, NSScreen, NSStatusWindowLevel,
-        NSTextField, NSTitlePosition, NSWindowCollectionBehavior, NSWindowStyleMask,
+        NSTextField, NSTitlePosition, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
     };
-    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize, NSString};
+    use objc2_quartz_core::CAGradientLayer;
 
     use super::{BARS, bar_alpha};
 
-    const H: f64 = 72.0;
     const RADIUS: f64 = 22.0;
     const BAR_W: f64 = 3.5;
     const BAR_GAP: f64 = 3.0;
     /// How much taller than a dot the loudest centre bar gets.
     const MAX_RISE: f64 = 24.0;
     const PAD: f64 = 22.0;
+    /// The words get this much width whatever they say; longer text shows its end and fades out
+    /// at the edges.
+    const TEXT_W: f64 = 340.0;
+    const FADE: f64 = 30.0;
+    /// Sukhumvit Set has no loops (หัว); the system font falls back to Thonburi for Thai, which does.
+    const FONT: &str = "SukhumvitSet-Medium";
+    const FONT_SIZE: f64 = 15.0;
     /// The waveform's centre line, from the bottom of the pill.
-    const WAVE_Y: f64 = 24.0;
-    /// The label's baseline area starts this far up.
-    const TEXT_Y: f64 = 42.0;
+    const WAVE_Y: f64 = 26.0;
+    /// The words' bottom, from the bottom of the pill: clear of the loudest bars.
+    const TEXT_Y: f64 = 52.0;
+    const TOP_PAD: f64 = 12.0;
     /// Rings of the glow, innermost last; each adds a little light, so the centre is brightest.
     const GLOW: [(f64, f64); 5] = [(150.0, 40.0), (118.0, 34.0), (88.0, 28.0), (60.0, 22.0), (34.0, 16.0)];
     const GLOW_ALPHA: f64 = 0.085;
@@ -290,13 +300,34 @@ mod mac {
         bg: Retained<NSBox>,
         glow: Vec<Retained<NSBox>>,
         bars: Vec<Retained<NSBox>>,
+        /// Clips the label to TEXT_W and fades it out at both ends (a gradient mask on its layer).
+        text_box: Retained<NSView>,
         label: Retained<NSTextField>,
-        /// The pill's width now; bars and glow are centred in it.
-        width: std::cell::Cell<f64>,
     }
 
     fn wave_width() -> f64 {
         BARS as f64 * BAR_W + (BARS - 1) as f64 * BAR_GAP
+    }
+
+    const W: f64 = PAD + TEXT_W + PAD;
+
+    /// Opaque in the middle, clear at both ends: as a mask, it fades what it covers out at the sides.
+    fn fade_mask() -> Retained<CAGradientLayer> {
+        let mask = CAGradientLayer::new();
+        let clear = unsafe { NSColor::colorWithWhite_alpha(0.0, 0.0) }.CGColor();
+        let solid = unsafe { NSColor::colorWithWhite_alpha(0.0, 1.0) }.CGColor();
+        // CGColor is toll-free bridged: an object CAGradientLayer's `colors` array can hold.
+        fn obj<T>(c: &T) -> &AnyObject {
+            unsafe { &*(c as *const T as *const AnyObject) }
+        }
+        let colors = NSArray::from_slice(&[obj(&*clear), obj(&*solid), obj(&*solid), obj(&*clear)]);
+        let f = FADE / TEXT_W;
+        let stops = [0.0, f, 1.0 - f, 1.0].map(NSNumber::numberWithDouble);
+        unsafe { mask.setColors(Some(&colors)) };
+        mask.setLocations(Some(&NSArray::from_retained_slice(&stops)));
+        mask.setStartPoint(NSPoint::new(0.0, 0.5));
+        mask.setEndPoint(NSPoint::new(1.0, 0.5));
+        mask
     }
 
     fn color(rgb: [f64; 3], a: f64) -> Retained<NSColor> {
@@ -325,7 +356,7 @@ mod mac {
         pub fn new() -> Option<Self> {
             let mtm = MainThreadMarker::new()?;
             unsafe {
-                let frame = rect(0.0, 0.0, 200.0, H);
+                let frame = rect(0.0, 0.0, W, 80.0);
                 let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
                     NSPanel::alloc(mtm),
                     frame,
@@ -369,11 +400,19 @@ mod mac {
                         b
                     })
                     .collect();
+                let text_box = NSView::initWithFrame(NSView::alloc(mtm), rect(PAD, TEXT_Y, TEXT_W, 20.0));
+                text_box.setWantsLayer(true);
+                if let Some(layer) = text_box.layer() {
+                    layer.setMask(Some(&fade_mask()));
+                }
+                content.addSubview(&text_box);
                 let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
                 label.setTextColor(Some(&NSColor::whiteColor()));
-                label.setFont(Some(&NSFont::systemFontOfSize_weight(14.0, NSFontWeightMedium)));
-                content.addSubview(&label);
-                Some(Self { mtm, panel, bg, glow, bars, label, width: std::cell::Cell::new(200.0) })
+                let font = NSFont::fontWithName_size(&NSString::from_str(FONT), FONT_SIZE)
+                    .unwrap_or_else(|| NSFont::systemFontOfSize_weight(FONT_SIZE, NSFontWeightMedium));
+                label.setFont(Some(&font));
+                text_box.addSubview(&label);
+                Some(Self { mtm, panel, bg, glow, bars, text_box, label })
             }
         }
 
@@ -381,11 +420,16 @@ mod mac {
             unsafe {
                 self.label.setStringValue(&NSString::from_str(text));
                 let fit = self.label.fittingSize();
-                let w = (PAD + wave_width().max(fit.width + 4.0) + PAD).ceil();
-                self.width.set(w);
-                let label_frame = rect(((w - fit.width - 4.0) / 2.0).round(), TEXT_Y, fit.width + 4.0, fit.height);
-                self.label.setFrame(label_frame);
-                self.bg.setFrame(rect(0.0, 0.0, w, H));
+                let (tw, th) = (fit.width + 4.0, fit.height);
+                // Centred while it fits between the fades; past that, its end (the newest words) shows.
+                let x = if tw <= TEXT_W - 2.0 * FADE { (TEXT_W - tw) / 2.0 } else { TEXT_W - FADE / 2.0 - tw };
+                self.label.setFrame(rect(x.round(), 0.0, tw, th));
+                self.text_box.setFrame(rect(PAD, TEXT_Y, TEXT_W, th));
+                if let Some(mask) = self.text_box.layer().and_then(|l| l.mask()) {
+                    mask.setFrame(rect(0.0, 0.0, TEXT_W, th));
+                }
+                let (w, h) = (W, (TEXT_Y + th + TOP_PAD).ceil());
+                self.bg.setFrame(rect(0.0, 0.0, w, h));
                 for (i, b) in self.bars.iter().enumerate() {
                     b.setFillColor(&color(rgb, bar_alpha(i)));
                 }
@@ -402,7 +446,7 @@ mod mac {
                     }
                     None => (100.0, 100.0),
                 };
-                self.panel.setFrame_display(rect(x.round(), y.round(), w, H), true);
+                self.panel.setFrame_display(rect(x.round(), y.round(), w, h), true);
                 self.panel.orderFrontRegardless();
                 self.panel.invalidateShadow();
             }
@@ -410,7 +454,7 @@ mod mac {
 
         /// Bar heights as fractions (0..1) of the maximum; `glow`: how loud the newest sound is (0..1).
         pub fn set_bars(&self, heights: &[f32; BARS], glow: f32) {
-            let left = (self.width.get() - wave_width()) / 2.0;
+            let left = (W - wave_width()) / 2.0;
             for (i, (b, &h)) in self.bars.iter().zip(heights).enumerate() {
                 let bh = BAR_W + MAX_RISE * h as f64;
                 let x = left + i as f64 * (BAR_W + BAR_GAP);
@@ -453,10 +497,11 @@ mod win {
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CLEARTYPE_QUALITY, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW,
-        CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DeleteDC, DeleteObject, EndPaint, FW_MEDIUM, FillRect,
+        CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DeleteDC, DeleteObject, ETO_CLIPPED, EndPaint, ExtTextOutW,
+        FW_MEDIUM, FillRect,
         GetDC, GetMonitorInfoW, GetStockObject, GetTextExtentPoint32W, HFONT, InvalidateRect, LOGFONTW,
         MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, NULL_PEN, PAINTSTRUCT, ReleaseDC, RoundRect, SRCCOPY,
-        SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT, TextOutW,
+        SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -466,21 +511,23 @@ mod win {
         ShowWindow, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
-    use windows::core::w;
+    use windows::core::{PCWSTR, w};
 
     use super::{BARS, bar_alpha};
 
     // In pixels at 100% scaling (96 DPI), measured from the top (the macOS view's from the bottom).
-    const H: f32 = 72.0;
+    const H: f32 = 86.0;
     const RADIUS: f32 = 22.0;
     const BAR_W: f32 = 3.5;
     const BAR_GAP: f32 = 3.0;
     const MAX_RISE: f32 = 24.0;
     const PAD: f32 = 22.0;
+    /// The words get this much width whatever they say; longer text shows its end, clipped.
+    const TEXT_W: f32 = 340.0;
     /// The waveform's centre line, from the top.
-    const WAVE_Y: f32 = 48.0;
+    const WAVE_Y: f32 = 60.0;
     /// The label's top.
-    const TEXT_Y: f32 = 10.0;
+    const TEXT_Y: f32 = 12.0;
     /// Rings of the glow, outermost first; each adds a little light, so the centre is brightest.
     const GLOW: [(f32, f32); 5] = [(150.0, 40.0), (118.0, 34.0), (88.0, 28.0), (60.0, 22.0), (34.0, 16.0)];
     const GLOW_ALPHA: f64 = 0.085;
@@ -617,7 +664,7 @@ mod win {
                     SelectObject(dc, old);
                     ReleaseDC(Some(self.hwnd), dc);
                 }
-                look.width = look.px(PAD + PAD) + look.px(wave_width()).max(size.cx);
+                look.width = look.px(PAD + TEXT_W + PAD);
                 look.text = text;
                 look.rgb = rgb;
                 Some((look.width, look.px(H), look.px(BOTTOM)))
@@ -719,7 +766,10 @@ mod win {
                 SetTextColor(mem, COLORREF(0x00FF_FFFF));
                 let mut size = SIZE::default();
                 let _ = GetTextExtentPoint32W(mem, &look.text, &mut size);
-                let _ = TextOutW(mem, (w - size.cx) / 2, look.px(TEXT_Y), &look.text);
+                let (pad, text_w) = (look.px(PAD), look.px(TEXT_W));
+                let x = if size.cx <= text_w { (w - size.cx) / 2 } else { pad + text_w - size.cx };
+                let clip = RECT { left: pad, top: 0, right: pad + text_w, bottom: h };
+                let _ = ExtTextOutW(mem, x, look.px(TEXT_Y), ETO_CLIPPED, Some(&clip), PCWSTR(look.text.as_ptr()), look.text.len() as u32, None);
                 SelectObject(mem, old_font);
                 let _ = BitBlt(dc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
                 SelectObject(mem, old_bmp);
