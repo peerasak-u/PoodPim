@@ -156,8 +156,25 @@ fn read(p: &std::path::Path) -> Option<Config> {
 }
 
 /// A config file's text, with an older version's single microphone moved to the top of the list.
+/// None only if it isn't a JSON object. A setting this version can't read (a value from a newer
+/// or an older version, or edited by hand) keeps its default; the others are kept.
 fn parse(text: &str) -> Option<Config> {
-    let mut c: Config = serde_json::from_str(text).ok()?;
+    let serde_json::Value::Object(file) = serde_json::from_str(text).ok()? else { return None };
+    let mut c: Config = match serde_json::from_value(serde_json::Value::Object(file.clone())) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("config: {e}; keeping the settings that can be read");
+            let mut kept = serde_json::Map::new();
+            for (key, value) in file {
+                kept.insert(key.clone(), value);
+                if serde_json::from_value::<Config>(serde_json::Value::Object(kept.clone())).is_err() {
+                    eprintln!("config: `{key}` reset to its default");
+                    kept.remove(&key);
+                }
+            }
+            serde_json::from_value(serde_json::Value::Object(kept)).ok()?
+        }
+    };
     if let Some(name) = c.microphone.take() {
         c.microphones.insert(0, Some(name));
     }
@@ -178,10 +195,16 @@ fn preset_path() -> Option<PathBuf> {
 
 impl Config {
     /// Loads the user's config. On first run (no config file yet) it starts from the
-    /// `preset.json` shipped with the app, if any, and saves that as the user's config.
+    /// `preset.json` shipped with the app, if any, and saves that as the user's config. A file
+    /// that isn't JSON at all is kept as config.json.bad before anything overwrites it.
     pub fn load() -> Self {
-        if let Some(c) = read(&path()) {
+        let p = path();
+        if let Some(c) = read(&p) {
             return c;
+        }
+        if p.exists() {
+            eprintln!("config: {} can't be read; kept as config.json.bad", p.display());
+            let _ = std::fs::rename(&p, p.with_extension("json.bad"));
         }
         match preset_path().as_deref().and_then(read) {
             Some(c) => {
@@ -197,14 +220,20 @@ impl Config {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        if let Ok(s) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(&p, s);
-            // The file holds the API key: keep it private to this user.
+        let Ok(s) = serde_json::to_string_pretty(self) else { return };
+        // Written beside it and renamed over it, so a crash mid-write can't leave half a file.
+        let tmp = p.with_extension("json.tmp");
+        let written = (|| -> std::io::Result<()> {
+            let mut o = std::fs::OpenOptions::new();
+            o.write(true).create(true).truncate(true);
+            // The file holds the API key: private to this user from the start.
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
-            }
+            std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+            std::io::Write::write_all(&mut o.open(&tmp)?, s.as_bytes())?;
+            std::fs::rename(&tmp, &p)
+        })();
+        if let Err(e) = written {
+            eprintln!("config: saving {}: {e}", p.display());
         }
     }
 
@@ -279,6 +308,20 @@ mod tests {
         assert_eq!(c.unload_min(), None);
         c.unload_when_idle = true;
         assert_eq!(c.unload_min(), Some(30));
+    }
+
+    #[test]
+    fn a_setting_this_version_cant_read_keeps_the_rest() {
+        let c = super::parse(
+            r#"{"server_url":"https://x.example","api_key":"k","talk_mode":"from_the_future","talk_key":{"type":"modifier","key":"right_command"},"mixed_english":false}"#,
+        )
+        .unwrap();
+        assert_eq!((c.server_url.as_str(), c.api_key.as_str()), ("https://x.example", "k"));
+        assert!(!c.mixed_english);
+        assert_eq!(c.talk_mode, TalkMode::default());
+        assert_eq!(c.talk_key, Binding::DEFAULT);
+        assert!(super::parse("not json").is_none());
+        assert!(super::parse("[1]").is_none());
     }
 
     #[test]
