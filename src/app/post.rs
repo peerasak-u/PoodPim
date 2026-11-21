@@ -11,8 +11,8 @@ const TEST_SAMPLE: &str = "วันนี้ เรา มี ประชุ�
 impl super::App {
     /// What is typed or pasted for transcribed `text`.
     pub(super) fn tidy(&self, text: &str) -> String {
-        let text = if self.cfg.remove_fillers { crate::fillers::remove(text) } else { text.to_string() };
-        corrections::finish(&text, &self.corrections, self.cfg.numbers_as_digits)
+        let text = corrections::finish(text, &self.corrections, self.cfg.numbers_as_digits);
+        if self.cfg.remove_fillers { crate::fillers::remove(&text) } else { text }
     }
 
     /// Adds `text` to "Paste last" and Recent.

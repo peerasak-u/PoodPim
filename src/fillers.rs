@@ -1,12 +1,14 @@
 //! Drops filler words ("เอ่อ", "อืม", "um", "uh") from transcribed text.
 //!
-//! Conservative on purpose: Thai fillers that also start real words ("อ่า" in "อ่าน") go only
-//! when they stand alone, and English ones only as whole words ("um" but not "summer").
+//! Conservative on purpose: Thai ASR output has no spaces between words and fillers double as
+//! real words ("น้ำตาเอ่อขึ้น", "อืมมาก" = อืม + มาก, "เออ" = yeah), so a Thai filler goes only
+//! when it stands alone. English ones go only as whole lower-case or capitalised words, so
+//! "summer" and acronyms like "ER" stay.
 
-/// English fillers, matched as whole words in any case.
-const ENGLISH: &[&str] = &["um", "umm", "uh", "uhh", "uhm", "er", "erm", "hm", "hmm", "mmm"];
+/// English fillers, matched as whole words in lower case or capitalised, never ALL CAPS.
+const ENGLISH: &[&str] = &["um", "umm", "uh", "uhh", "uhm", "erm", "hm", "hmm", "mmm"];
 /// Thai fillers removed only between spaces, punctuation or the ends of the text.
-const THAI_STANDALONE: &[&str] = &["อ่า", "เออ", "อ่อ"];
+const THAI_STANDALONE: &[&str] = &["เอิ่ม", "เอ่อ", "อ่า", "อ่อ"];
 
 pub fn remove(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
@@ -34,25 +36,29 @@ fn filler_at(chars: &[char], i: usize) -> Option<usize> {
             return None;
         }
         let end = (i..chars.len()).find(|&j| !chars[j].is_ascii_alphanumeric()).unwrap_or(chars.len());
-        let word: String = chars[i..end].iter().collect::<String>().to_ascii_lowercase();
-        return ENGLISH.contains(&word.as_str()).then_some(end - i);
+        let word: String = chars[i..end].iter().collect();
+        return is_filler_word(&word).then_some(end - i);
     }
-    if starts(chars, i, "เอิ่ม") {
-        return Some(5);
+    let before = i == 0 || is_break(chars[i - 1]);
+    if !before {
+        return None;
     }
     if starts(chars, i, "อืม") {
-        let extra = chars[i + 3..].iter().take_while(|&&c| c == 'ม').count();
-        return Some(3 + extra);
-    }
-    if starts(chars, i, "เอ่อ") && !starts(chars, i + 4, "ล้น") {
-        return Some(4);
+        let n = 3 + chars[i + 3..].iter().take_while(|&&c| c == 'ม').count();
+        return chars.get(i + n).is_none_or(|&c| is_break(c)).then_some(n);
     }
     THAI_STANDALONE.iter().find_map(|w| {
         let n = w.chars().count();
-        let before = i == 0 || is_break(chars[i - 1]);
         let after = chars.get(i + n).is_none_or(|&c| is_break(c));
-        (starts(chars, i, w) && before && after).then_some(n)
+        (starts(chars, i, w) && after).then_some(n)
     })
+}
+
+fn is_filler_word(word: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    let mut cased = lower.clone();
+    cased[..1].make_ascii_uppercase();
+    (word == lower || word == cased) && ENGLISH.contains(&lower.as_str())
 }
 
 fn starts(chars: &[char], i: usize, word: &str) -> bool {
@@ -88,16 +94,34 @@ mod tests {
     #[test]
     fn english_fillers_go_as_whole_words() {
         assert_eq!(remove("um, deploy uh server"), "deploy server");
-        assert_eq!(remove("Um so UH yes"), "so yes");
+        assert_eq!(remove("Um so uh yes"), "so yes");
+        assert_eq!(remove("UH UM"), "UH UM");
         assert_eq!(remove("summer number umbrella hummus"), "summer number umbrella hummus");
         assert_eq!(remove("error err erm"), "error err");
     }
 
     #[test]
-    fn thai_fillers_go_anywhere() {
+    fn thai_fillers_go_when_standalone() {
         assert_eq!(remove("เอ่อ วันนี้ อืม ประชุม"), "วันนี้ ประชุม");
-        assert_eq!(remove("วันนี้อืมมมประชุม"), "วันนี้ประชุม");
+        assert_eq!(remove("วันนี้ อืมมม ประชุม"), "วันนี้ ประชุม");
         assert_eq!(remove("เอิ่ม ไม่รู้"), "ไม่รู้");
+        assert_eq!(remove("อืม ดีครับ"), "ดีครับ");
+        assert_eq!(remove("เอ่อ วันนี้"), "วันนี้");
+    }
+
+    #[test]
+    fn thai_fillers_inside_words_stay() {
+        assert_eq!(remove("อืมมากเลย"), "อืมมากเลย");
+        assert_eq!(remove("อืมมันก็ดีนะ"), "อืมมันก็ดีนะ");
+        assert_eq!(remove("วันนี้อืมมมประชุม"), "วันนี้อืมมมประชุม");
+        assert_eq!(remove("น้ำตาเอ่อขึ้นมา"), "น้ำตาเอ่อขึ้นมา");
+    }
+
+    #[test]
+    fn yeah_and_acronyms_stay() {
+        assert_eq!(remove("เออ ได้เลย"), "เออ ได้เลย");
+        assert_eq!(remove("ER diagram ของ database"), "ER diagram ของ database");
+        assert_eq!(remove("er"), "er");
     }
 
     #[test]
@@ -111,7 +135,7 @@ mod tests {
     fn standalone_thai_fillers() {
         assert_eq!(remove("อ่า"), "");
         assert_eq!(remove("อ่า ไปกัน"), "ไปกัน");
-        assert_eq!(remove("ใช่ เออ ได้"), "ใช่ ได้");
+        assert_eq!(remove("ใช่ อ่อ ได้"), "ใช่ ได้");
         assert_eq!(remove("อ่อ, เข้าใจแล้ว"), "เข้าใจแล้ว");
     }
 
