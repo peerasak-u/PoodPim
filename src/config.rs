@@ -19,6 +19,9 @@ pub enum Backend {
 #[serde(default)]
 pub struct Config {
     pub backend: Backend,
+    /// Input device name; None = the system default (also while that device is not connected).
+    #[serde(deserialize_with = "crate::audio::de_device_name")]
+    pub microphone: Option<String>,
     /// Lambda Function URL, e.g. https://xxxx.lambda-url.ap-southeast-7.on.aws/
     pub server_url: String,
     pub api_key: String,
@@ -50,6 +53,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             backend: Backend::Local,
+            microphone: None,
             server_url: String::new(),
             api_key: String::new(),
             mixed_english: true,

@@ -129,6 +129,48 @@
   </div>
 </div>
 
+<h2>ไมโครโฟน</h2>
+<div class="card" id="mic-card">
+  <style>
+    #mic-select { font: inherit; font-size: 13px; color: var(--text); background: var(--field); border: 1px solid var(--field-line);
+      border-radius: 7px; padding: 5px 8px; max-width: 220px; flex: none; }
+    #mic-select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); border-color: var(--accent); }
+  </style>
+  <div class="row">
+    <div class="text"><div class="label">ไมโครโฟนที่ใช้</div>
+      <div class="hint" id="mic-hint"></div></div>
+    <select id="mic-select"></select>
+    <button class="btn" id="mic-refresh">รีเฟรช</button>
+  </div>
+  <script>
+    (() => {
+      const HINT = "เลือกไมค์ในเครื่องแทนหูฟัง Bluetooth ได้ เสียงเพลงจะไม่ถูกลดคุณภาพตอนพูด";
+      const MISSING = "ไม่เจอไมค์นี้ ตอนนี้ใช้ไมค์เริ่มต้นของระบบแทน";
+      const select = document.getElementById("mic-select");
+      let listed = false, shown = "";
+      document.addEventListener("poodpim:state", (e) => {
+        const m = e.detail.mic;
+        if (!listed) { listed = true; send({ cmd: "mic", action: "refresh" }); }
+        const opts = [{ value: "", text: "ตามค่าเริ่มต้นของระบบ" }];
+        m.devices.forEach((d) => opts.push({ value: d, text: d }));
+        if (m.selected !== null && !m.devices.includes(m.selected))
+          opts.push({ value: m.selected, text: m.missing ? `${m.selected} (ไม่ได้ต่ออยู่)` : m.selected });
+        const key = JSON.stringify(opts);
+        if (key !== shown) {
+          shown = key;
+          select.replaceChildren(...opts.map((o) => {
+            const el = document.createElement("option"); el.value = o.value; el.textContent = o.text; return el;
+          }));
+        }
+        select.value = m.selected ?? "";
+        $("mic-hint").textContent = m.missing ? MISSING : HINT;
+      });
+      select.addEventListener("change", () => send({ cmd: "mic", value: select.value === "" ? null : select.value }));
+      document.getElementById("mic-refresh").addEventListener("click", () => send({ cmd: "mic", action: "refresh" }));
+    })();
+  </script>
+</div>
+
 <h2>ข้อความ</h2>
 <div class="card">
   <div class="row">
