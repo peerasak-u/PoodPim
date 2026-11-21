@@ -174,11 +174,40 @@
       <div class="hint">และไม่ให้ข้อความที่พูดไปค้างในประวัติ clipboard</div></div>
     <label class="switch"><input type="checkbox" data-set="restore"><span></span></label>
   </div>
+  <style>
+    select.unload-select { font: inherit; font-size: 13.5px; color: var(--text); background: var(--field);
+      border: 1px solid var(--field-line); border-radius: 7px; padding: 5px 8px; flex: none; }
+    select.unload-select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); border-color: var(--accent); }
+  </style>
   <div class="row">
-    <div class="text"><div class="label">คืน RAM เมื่อไม่ได้ใช้ 15 นาที</div>
+    <div class="text"><div class="label"><label for="unload-after">คืน RAM เมื่อไม่ได้ใช้</label></div>
       <div class="hint">คืนราว 0.75 GB · กดพูดครั้งถัดไปแอปโหลดโมเดลระหว่างที่คุณพูด (1–3 วินาที)</div></div>
-    <label class="switch"><input type="checkbox" data-set="unload"><span></span></label>
+    <select class="unload-select" id="unload-after">
+      <option value="off">ไม่คืน</option>
+      <option value="0">ทันทีหลังพูดเสร็จ</option>
+      <option value="2">2 นาที</option>
+      <option value="5">5 นาที</option>
+      <option value="10">10 นาที</option>
+      <option value="15">15 นาที</option>
+      <option value="30">30 นาที</option>
+      <option value="60">1 ชั่วโมง</option>
+    </select>
   </div>
+  <script>
+    (() => {
+      const sel = document.getElementById("unload-after");
+      document.addEventListener("poodpim:state", (e) => {
+        const v = e.detail.unloadAfter == null ? "off" : String(e.detail.unloadAfter);
+        if (![...sel.options].some((o) => o.value === v)) {
+          sel.querySelector("option[data-custom]")?.remove();
+          const o = new Option(`${v} นาที`, v); o.dataset.custom = "1"; sel.add(o);
+        }
+        sel.value = v;
+      });
+      sel.addEventListener("change", () =>
+        send({ cmd: "set", key: "unload", value: sel.value === "off" ? null : Number(sel.value) }));
+    })();
+  </script>
   <div class="row">
     <div class="text"><div class="label">เปิด PoodPim เมื่อเข้าเครื่อง</div></div>
     <label class="switch"><input type="checkbox" data-set="autostart"><span></span></label>
@@ -211,6 +240,7 @@
 
   window.render = (s) => {
     state = s;
+    document.dispatchEvent(new CustomEvent("poodpim:state", { detail: s }));
     $("version").textContent = s.version;
     $("status").innerHTML = "";
     const b = document.createElement("b"); b.textContent = s.status; $("status").append(b);

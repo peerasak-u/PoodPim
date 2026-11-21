@@ -42,8 +42,6 @@ const RECENT: usize = 10;
 /// Recording goes on this long after the talk key is let go: people let go while saying the
 /// last syllable (fast speakers especially), and the sound card still holds a bit of audio.
 const TAIL: Duration = Duration::from_millis(200);
-/// With "Free memory when idle": the model is freed after this long without dictation.
-const UNLOAD_AFTER: Duration = Duration::from_secs(15 * 60);
 /// Overlay animation frame interval.
 const FRAME: Duration = Duration::from_millis(33);
 /// How often the unfinished part is transcribed again for the pill (`live_preview`).
@@ -131,12 +129,12 @@ struct App {
     cfg: Config,
     state: State,
     asr: Option<Arc<Mutex<OpenThaiAsr>>>,
-    /// The model was freed after UNLOAD_AFTER without dictation: the state stays Idle and the
+    /// The model was freed after `unload_after_min` without dictation: the state stays Idle and the
     /// next recording loads it again while the user speaks.
     asleep: bool,
     /// Loading the model again after it was freed (see `asleep`).
     waking: Option<Arc<Waking>>,
-    /// The last dictation (or model load): what UNLOAD_AFTER counts from.
+    /// The last dictation (or model load): what `unload_after_min` counts from.
     last_used: Instant,
     load_gen: u64,
     recorder: Recorder,
@@ -1411,9 +1409,10 @@ impl App {
 
     /// When the idle model is due to be freed (None: not applicable).
     fn unload_at(&self) -> Option<Instant> {
-        let applies = self.cfg.unload_when_idle && self.cfg.backend == Backend::Local && self.state == State::Idle;
+        let after = self.cfg.unload_after()?;
         // POODPIM_UNLOAD_AFTER_S: a shorter wait, for testing.
-        let after = std::env::var("POODPIM_UNLOAD_AFTER_S").ok().and_then(|v| v.parse().ok()).map_or(UNLOAD_AFTER, Duration::from_secs);
+        let after = std::env::var("POODPIM_UNLOAD_AFTER_S").ok().and_then(|v| v.parse().ok()).map_or(after, Duration::from_secs);
+        let applies = self.cfg.backend == Backend::Local && self.state == State::Idle;
         (applies && self.asr.is_some() && self.pipeline.is_none()).then(|| self.last_used + after)
     }
 
@@ -1421,7 +1420,7 @@ impl App {
         if self.unload_at().is_some_and(|t| Instant::now() >= t) {
             self.asr = None;
             self.asleep = true;
-            eprintln!("freed the model: no dictation for a while");
+            eprintln!("freed the model: idle for {} min", self.cfg.unload_after_min);
         }
     }
 
@@ -1582,7 +1581,7 @@ impl App {
             "mixed": self.cfg.mixed_english,
             "digits": self.cfg.numbers_as_digits,
             "restore": self.cfg.restore_clipboard,
-            "unload": self.cfg.unload_when_idle,
+            "unloadAfter": self.cfg.unload_when_idle.then_some(self.cfg.unload_after_min),
             "live": self.cfg.live_typing,
             "preview": self.cfg.live_preview,
             "autostart": self.cfg.start_at_login,
@@ -1633,7 +1632,14 @@ impl App {
                     "preview" => self.cfg.live_preview = on,
                     "restore" => self.cfg.restore_clipboard = on,
                     "unload" => {
-                        self.cfg.unload_when_idle = on;
+                        // null: never free the model (the minutes are kept for next time).
+                        match v["value"].as_u64() {
+                            Some(min) => {
+                                self.cfg.unload_when_idle = true;
+                                self.cfg.unload_after_min = min.min(24 * 60) as u32;
+                            }
+                            None => self.cfg.unload_when_idle = false,
+                        }
                         self.last_used = Instant::now();
                     }
                     "autostart" => self.cfg.start_at_login = on,
