@@ -156,7 +156,6 @@
     background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 13px; transition: all .2s; }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
   body:not(.ready) * { transition: none !important; }
-  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 22px; }
 </style>
 </head>
 <body>
@@ -793,7 +792,6 @@
 </div>
 </section>
 
-<footer id="footer"></footer>
 </div>
 </main>
 </div>
@@ -836,11 +834,6 @@
       const o = new Option(`${stop} วินาที`, stop); o.dataset.custom = ""; $("auto-stop").add(o);
     }
     $("auto-stop").value = stop;
-    $("footer").textContent = {
-      auto: `แตะ ${s.talkKey} เพื่อพูด หยุดเองเมื่อเงียบ · หรือกดค้างไว้ · ${s.cancelKey} = ยกเลิก`,
-      hold: `กด ${s.talkKey} ค้างไว้เพื่อพูด · ${s.cancelKey} = ยกเลิก`,
-      toggle: `แตะ ${s.talkKey} เพื่อเริ่มพูด แตะอีกครั้งเมื่อจบ · ${s.cancelKey} = ยกเลิก`,
-    }[s.talkMode];
     document.querySelectorAll("[data-pill-position]").forEach((btn) =>
       btn.setAttribute("aria-pressed", String(btn.dataset.pillPosition === s.pillPosition)));
     $("pill-position-hint").textContent = "แถบคลื่นเสียงกับคำที่พูด · ตอนนี้: "
