@@ -54,6 +54,8 @@ pub struct Config {
     pub model_upgrade_declined: bool,
     /// Drop filler words ("เอ่อ", "อืม", "um") before typing or pasting, see fillers.rs.
     pub remove_fillers: bool,
+    /// Where on the screen the dictation pill appears.
+    pub pill_position: crate::overlay::Position,
     /// Clean up the final text with a language model before pasting, see polish.rs.
     #[serde(deserialize_with = "lenient")]
     pub polish: Polish,
@@ -78,6 +80,7 @@ impl Default for Config {
             live_preview: true,
             model_upgrade_declined: false,
             remove_fillers: true,
+            pill_position: Default::default(),
             polish: Polish::default(),
         }
     }

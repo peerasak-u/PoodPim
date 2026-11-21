@@ -9,6 +9,45 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
+/// Where on the screen the pill appears. Bottom centre covers the text box of many chat and
+/// coding apps, so the user can move it to another edge or a corner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Position {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomCenter,
+    BottomRight,
+}
+
+/// Gap between the pill and the edges of the usable screen area (menu bar, Dock and taskbar
+/// excluded), in points at 100% scaling.
+const EDGE: f64 = 16.0;
+/// Bottom centre sits higher, clear of the Dock's magnified icons, as it always has.
+const BOTTOM_CENTER: f64 = 64.0;
+
+/// The pill's offset inside a usable area of `area_w` × `area_h`: x from the left, y from the
+/// bottom. `w` and `h` are the pill's size; `unit` scales the margins (Windows: DPI / 96).
+fn place(pos: Position, area_w: f64, area_h: f64, w: f64, h: f64, unit: f64) -> (f64, f64) {
+    use Position::*;
+    let x = match pos {
+        TopLeft | BottomLeft => EDGE * unit,
+        TopCenter | BottomCenter => (area_w - w) / 2.0,
+        TopRight | BottomRight => area_w - w - EDGE * unit,
+    };
+    let y = match pos {
+        TopLeft | TopCenter | TopRight => area_h - h - EDGE * unit,
+        BottomCenter => BOTTOM_CENTER * unit,
+        BottomLeft | BottomRight => EDGE * unit,
+    };
+    (x.round(), y.round())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
     Hidden,
@@ -71,6 +110,7 @@ pub struct Overlay {
     preview: String,
     /// The talk key's name and whether it is tapped to start (press mode), for the labels.
     talk_key: (String, bool),
+    position: Position,
     since: Instant,
     level: f32,
     shown: f32,
@@ -103,6 +143,21 @@ fn preview_tail(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{Position::*, place};
+
+    #[test]
+    fn places_the_pill_at_each_edge() {
+        let at = |p| place(p, 1000.0, 600.0, 200.0, 80.0, 1.0);
+        assert_eq!(at(TopLeft), (16.0, 504.0));
+        assert_eq!(at(TopCenter), (400.0, 504.0));
+        assert_eq!(at(TopRight), (784.0, 504.0));
+        assert_eq!(at(BottomLeft), (16.0, 16.0));
+        assert_eq!(at(BottomCenter), (400.0, 64.0));
+        assert_eq!(at(BottomRight), (784.0, 16.0));
+        // Margins scale with the display; the pill's size is already in pixels.
+        assert_eq!(place(BottomCenter, 2000.0, 1200.0, 400.0, 160.0, 2.0), (800.0, 128.0));
+    }
+
     #[test]
     fn preview_shows_the_end_without_a_loose_mark() {
         assert_eq!(super::preview_tail(" สวัสดีครับ "), "สวัสดีครับ");
@@ -145,6 +200,7 @@ impl Overlay {
             phase: Phase::Hidden,
             preview: String::new(),
             talk_key: (crate::platform::TALK_KEY_LABEL.into(), false),
+            position: Position::default(),
             since: Instant::now(),
             level: 0.0,
             shown: 0.0,
@@ -161,6 +217,22 @@ impl Overlay {
 
     fn label(&self) -> String {
         self.phase.label(&self.talk_key.0, self.talk_key.1)
+    }
+
+    /// Moves the pill. `preview`: show it there now (briefly, unless it is already showing), so
+    /// the user sees where it went.
+    pub fn set_position(&mut self, position: Position, preview: bool) {
+        self.position = position;
+        if !preview {
+            return;
+        }
+        if self.phase == Phase::Hidden {
+            self.set(Phase::Ready);
+        } else if let Some(v) = &self.view {
+            let words = !self.preview.is_empty();
+            let text = if words { self.preview.clone() } else { self.label() };
+            v.show(&text, self.phase.rgb(), words, self.position);
+        }
     }
 
     pub fn set(&mut self, phase: Phase) {
@@ -181,13 +253,13 @@ impl Overlay {
             if self.phase == Phase::Hidden {
                 v.hide();
             } else {
-                v.show(&self.label(), self.phase.rgb(), false);
+                v.show(&self.label(), self.phase.rgb(), false, self.position);
                 if !v.on_active_space() {
                     // A new panel joins the Spaces there are now (see View::on_active_space).
                     eprintln!("overlay: not on the current Space, made again");
                     self.view = sys::View::new();
                     if let Some(v) = &self.view {
-                        v.show(&self.label(), self.phase.rgb(), false);
+                        v.show(&self.label(), self.phase.rgb(), false, self.position);
                     }
                 }
             }
@@ -205,9 +277,9 @@ impl Overlay {
         self.preview = tail;
         if let Some(v) = &self.view {
             if self.preview.is_empty() {
-                v.show(&self.label(), self.phase.rgb(), false);
+                v.show(&self.label(), self.phase.rgb(), false, self.position);
             } else {
-                v.show(&self.preview, self.phase.rgb(), true);
+                v.show(&self.preview, self.phase.rgb(), true, self.position);
             }
         }
     }
@@ -270,7 +342,7 @@ mod mac {
     use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize, NSString};
     use objc2_quartz_core::CAGradientLayer;
 
-    use super::{BARS, bar_alpha};
+    use super::{BARS, Position, bar_alpha, place};
 
     const RADIUS: f64 = 22.0;
     const BAR_W: f64 = 3.5;
@@ -295,9 +367,6 @@ mod mac {
     /// Rings of the glow, innermost last; each adds a little light, so the centre is brightest.
     const GLOW: [(f64, f64); 5] = [(150.0, 40.0), (118.0, 34.0), (88.0, 28.0), (60.0, 22.0), (34.0, 16.0)];
     const GLOW_ALPHA: f64 = 0.085;
-    /// Distance from the bottom of the usable screen area (above the Dock).
-    const BOTTOM: f64 = 64.0;
-
     pub struct View {
         mtm: MainThreadMarker,
         panel: Retained<NSPanel>,
@@ -421,7 +490,7 @@ mod mac {
         }
 
         /// `words`: `text` is what the user said (bright), not the app's own status (dimmed).
-        pub fn show(&self, text: &str, rgb: [f64; 3], words: bool) {
+        pub fn show(&self, text: &str, rgb: [f64; 3], words: bool, position: Position) {
             unsafe {
                 self.label.setStringValue(&NSString::from_str(text));
                 self.label.setTextColor(Some(&color([1.0, 1.0, 1.0], if words { 1.0 } else { STATUS_ALPHA })));
@@ -443,12 +512,13 @@ mod mac {
                     b.setFillColor(&color(rgb, GLOW_ALPHA));
                     b.setFrame(rect(((w - gw) / 2.0).round(), (WAVE_Y - gh / 2.0).round(), gw, gh));
                 }
-                // On the screen the user is working on, centred above the Dock.
+                // On the screen the user is working on, clear of the menu bar and the Dock.
                 let screen = NSScreen::mainScreen(self.mtm).or_else(|| NSScreen::screens(self.mtm).firstObject());
                 let (x, y) = match screen {
                     Some(s) => {
                         let vf = s.visibleFrame();
-                        (vf.origin.x + (vf.size.width - w) / 2.0, vf.origin.y + BOTTOM)
+                        let (x, y) = place(position, vf.size.width, vf.size.height, w, h, 1.0);
+                        (vf.origin.x + x, vf.origin.y + y)
                     }
                     None => (100.0, 100.0),
                 };
@@ -519,7 +589,7 @@ mod win {
     };
     use windows::core::{PCWSTR, w};
 
-    use super::{BARS, bar_alpha};
+    use super::{BARS, Position, bar_alpha, place};
 
     // In pixels at 100% scaling (96 DPI), measured from the top (the macOS view's from the bottom).
     const H: f32 = 86.0;
@@ -547,8 +617,6 @@ mod win {
     fn over_bg(rgb: [f64; 3], a: f64) -> [f64; 3] {
         [0, 1, 2].map(|i| BG[i] + (rgb[i] - BG[i]) * a)
     }
-    /// Distance from the bottom of the work area (above the taskbar).
-    const BOTTOM: f32 = 64.0;
 
     /// What WM_PAINT draws (one overlay per app, on one thread). Sizes are in pixels at
     /// `scale` (the monitor's DPI / 96: tao makes the process DPI-aware, so nothing is scaled
@@ -636,7 +704,7 @@ mod win {
         }
 
         /// `words`: `text` is what the user said (bright), not the app's own status (dimmed).
-        pub fn show(&self, text: &str, rgb: [f64; 3], words: bool) {
+        pub fn show(&self, text: &str, rgb: [f64; 3], words: bool, position: Position) {
             let text: Vec<u16> = text.encode_utf16().collect();
             // The screen the user is working on: move there first, so the DPI read below is
             // that monitor's.
@@ -676,13 +744,17 @@ mod win {
                 look.text = text;
                 look.words = words;
                 look.rgb = rgb;
-                Some((look.width, look.px(H), look.px(BOTTOM)))
+                Some((look.width, look.px(H)))
             });
-            let Some((w, h, bottom)) = size else { return };
+            let Some((w, h)) = size else { return };
             unsafe {
-                // Bottom centre of that screen, above the taskbar.
+                // On that screen, clear of the taskbar.
                 let (x, y) = match work {
-                    Some(r) => (r.left + (r.right - r.left - w) / 2, r.bottom - bottom - h),
+                    Some(r) => {
+                        let (area_w, area_h) = ((r.right - r.left) as f64, (r.bottom - r.top) as f64);
+                        let (x, y) = place(position, area_w, area_h, w as f64, h as f64, scale as f64);
+                        (r.left + x as i32, r.bottom - y as i32 - h)
+                    }
                     None => (100, 100),
                 };
                 let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);

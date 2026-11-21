@@ -391,6 +391,7 @@ pub fn run() -> Result<()> {
         match event {
             Event::NewEvents(StartCause::Init) => {
                 app.apply_talk_key();
+                app.overlay.set_position(app.cfg.pill_position, false);
                 ui = Some(build_ui(app.talk_hint()));
                 let p = proxy.clone();
                 platform::spawn_hotkey_listener(Box::new(move |e| {
@@ -1739,6 +1740,7 @@ impl App {
             },
             "talkCapturing": hotkey::lock().capturing(),
             "talkMode": self.cfg.talk_mode,
+            "pillPosition": self.cfg.pill_position,
             "chooseKey": cfg!(target_os = "macos"),
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
             "needsPermission": self.needs_permission,
@@ -1815,6 +1817,12 @@ impl App {
                 self.cfg.talk_mode = mode;
                 self.cfg.save();
                 self.apply_talk_key();
+            }
+            "pill_position" => {
+                let Ok(position) = serde_json::from_value(v["value"].clone()) else { return };
+                self.cfg.pill_position = position;
+                self.cfg.save();
+                self.overlay.set_position(position, true);
             }
             "backend" => {
                 let backend = if text("value") == "lambda" { Backend::Lambda } else { Backend::Local };

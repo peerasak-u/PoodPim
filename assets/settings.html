@@ -56,6 +56,17 @@
     border-radius: 6px; cursor: pointer; }
   .seg button[aria-pressed="true"] { background: var(--seg-on); box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 600; }
 
+  /* where the pill appears: a small screen with a spot at each edge */
+  .spots { position: relative; width: 112px; height: 70px; flex: none; border-radius: 7px;
+    background: var(--seg); border: 1px solid var(--field-line); }
+  .spots button { position: absolute; width: 26px; height: 9px; padding: 0; border: 0; border-radius: 5px; cursor: pointer;
+    background: color-mix(in srgb, var(--muted) 45%, transparent); }
+  .spots button:hover { background: var(--muted); }
+  .spots button[aria-pressed="true"] { background: var(--accent); }
+  .spots button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .spots .top { top: 7px; } .spots .bottom { bottom: 7px; }
+  .spots .left { left: 7px; } .spots .right { right: 7px; } .spots .center { left: calc(50% - 13px); }
+
   /* buttons and fields */
   button.btn { border: 1px solid var(--field-line); background: var(--field); color: var(--text); font: inherit; font-size: 13px;
     padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none; white-space: nowrap; }
@@ -303,6 +314,18 @@
 <h2>ทั่วไป</h2>
 <div class="card">
   <div class="row">
+    <div class="text"><div class="label">ตำแหน่งแถบพูด</div>
+      <div class="hint" id="pill-position-hint"></div></div>
+    <div class="spots" role="group" aria-label="ตำแหน่งแถบพูด">
+      <button class="top left" data-pill-position="top_left" aria-label="บนซ้าย"></button>
+      <button class="top center" data-pill-position="top_center" aria-label="บนกลาง"></button>
+      <button class="top right" data-pill-position="top_right" aria-label="บนขวา"></button>
+      <button class="bottom left" data-pill-position="bottom_left" aria-label="ล่างซ้าย"></button>
+      <button class="bottom center" data-pill-position="bottom_center" aria-label="ล่างกลาง"></button>
+      <button class="bottom right" data-pill-position="bottom_right" aria-label="ล่างขวา"></button>
+    </div>
+  </div>
+  <div class="row">
     <div class="text"><div class="label">คืนข้อความเดิมใน clipboard หลังวาง</div>
       <div class="hint">และไม่ให้ข้อความที่พูดไปค้างในประวัติ clipboard</div></div>
     <label class="switch"><input type="checkbox" data-set="restore"><span></span></label>
@@ -381,6 +404,10 @@
       hold: `กด ${s.talkKey} ค้างไว้เพื่อพูด · Esc = ยกเลิก`,
       toggle: `แตะ ${s.talkKey} เพื่อเริ่มพูด แตะอีกครั้งเมื่อจบ · Esc = ยกเลิก`,
     }[s.talkMode];
+    document.querySelectorAll("[data-pill-position]").forEach((btn) =>
+      btn.setAttribute("aria-pressed", String(btn.dataset.pillPosition === s.pillPosition)));
+    $("pill-position-hint").textContent = "แถบคลื่นเสียงกับคำที่พูด · ตอนนี้: "
+      + document.querySelector(`[data-pill-position="${s.pillPosition}"]`)?.getAttribute("aria-label");
     document.querySelectorAll("[data-backend]").forEach((btn) =>
       btn.setAttribute("aria-pressed", String(btn.dataset.backend === s.backend)));
     $("backend-hint").textContent = s.backend === "local"
@@ -419,6 +446,8 @@
     btn.addEventListener("click", () => send({ cmd: "talk_key", value: btn.dataset.talkKey })));
   document.querySelectorAll("[data-talk-mode]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "talk_mode", value: btn.dataset.talkMode })));
+  document.querySelectorAll("[data-pill-position]").forEach((btn) =>
+    btn.addEventListener("click", () => send({ cmd: "pill_position", value: btn.dataset.pillPosition })));
   $("talk-capture").addEventListener("click", () => send({ cmd: "talk_capture", value: !state.talkCapturing }));
   document.querySelectorAll("[data-open]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "open", what: btn.dataset.open })));
