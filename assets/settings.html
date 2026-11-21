@@ -167,6 +167,24 @@
   </div>
 </div>
 
+<h2>ปรับข้อความ</h2>
+<div class="card" id="post-card">
+  <div class="row">
+    <div class="text"><div class="label">ตัดคำอุทาน</div>
+      <div class="hint">เอ่อ อืม um uh จะไม่ถูกพิมพ์</div></div>
+    <label class="switch"><input type="checkbox" id="post-fillers"><span></span></label>
+  </div>
+</div>
+<script>
+  document.addEventListener("poodpim:state", (e) => {
+    const p = e.detail.post;
+    if (!p) return;
+    $("post-fillers").checked = !!p.fillers;
+  });
+  document.getElementById("post-fillers").addEventListener("change", (e) =>
+    send({ cmd: "post", key: "fillers", value: e.target.checked }));
+</script>
+
 <h2>ทั่วไป</h2>
 <div class="card">
   <div class="row">
@@ -211,6 +229,7 @@
 
   window.render = (s) => {
     state = s;
+    document.dispatchEvent(new CustomEvent("poodpim:state", { detail: s }));
     $("version").textContent = s.version;
     $("status").innerHTML = "";
     const b = document.createElement("b"); b.textContent = s.status; $("status").append(b);

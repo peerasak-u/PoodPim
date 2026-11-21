@@ -7,6 +7,7 @@ pub mod asr;
 pub mod corrections;
 pub mod audio;
 pub mod features;
+pub mod fillers;
 pub mod hotwords;
 pub mod model;
 pub mod numbers;

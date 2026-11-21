@@ -127,6 +127,8 @@ struct Ui {
     shown_download: std::cell::Cell<bool>,
 }
 
+mod post;
+
 struct App {
     cfg: Config,
     state: State,
@@ -821,7 +823,7 @@ impl App {
                 let typed = std::mem::take(&mut self.typed);
                 let typer = self.typer.take();
                 let rest = crate::pipeline::join_parts(out.parts.get(typed.len()..).unwrap_or_default());
-                let rest = if rest.is_empty() { rest } else { corrections::finish(&rest, &self.corrections, self.cfg.numbers_as_digits) };
+                let rest = if rest.is_empty() { rest } else { self.tidy(&rest) };
                 let text = crate::pipeline::join_parts(&typed.iter().chain([&rest]).collect::<Vec<_>>());
                 if !text.is_empty() {
                     eprintln!("{:.1}s in {} segment(s), {} typed live: {}", out.audio_s, out.segments, typed.len(), said(&text));
@@ -978,7 +980,7 @@ impl App {
             UserEvent::Part(generation, text) => self.type_part(generation, text),
             UserEvent::Preview(generation, part, text, clipped) => {
                 if generation == self.rec_gen && self.state == State::Recording {
-                    self.preview = (part, corrections::finish(&text, &self.corrections, self.cfg.numbers_as_digits), clipped);
+                    self.preview = (part, self.tidy(&text), clipped);
                     self.show_heard();
                 }
             }
@@ -1322,7 +1324,7 @@ impl App {
         if generation != self.rec_gen {
             return; // cancelled recording
         }
-        let text = corrections::finish(&text, &self.corrections, self.cfg.numbers_as_digits);
+        let text = self.tidy(&text);
         self.heard.push(text.clone());
         self.show_heard();
         let live = self.cfg.live_typing && self.handsfree && self.state == State::Recording;
@@ -1592,6 +1594,7 @@ impl App {
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
             "needsPermission": self.needs_permission,
             "updates": update::supported(),
+            "post": self.post_state(),
         })
         .to_string()
     }
@@ -1706,6 +1709,7 @@ impl App {
             "download" => self.start_download(),
             "update" => self.check_update(),
             "uninstall" => self.ask_uninstall(),
+            "post" => self.post_message(&v),
             _ => {}
         }
     }

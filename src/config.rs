@@ -40,6 +40,8 @@ pub struct Config {
     pub live_preview: bool,
     /// Said "later" to replacing the old full-precision model with the smaller int8 one.
     pub model_upgrade_declined: bool,
+    /// Drop filler words ("เอ่อ", "อืม", "um") before typing or pasting, see fillers.rs.
+    pub remove_fillers: bool,
 }
 
 impl Default for Config {
@@ -56,6 +58,7 @@ impl Default for Config {
             live_typing: true,
             live_preview: true,
             model_upgrade_declined: false,
+            remove_fillers: true,
         }
     }
 }
