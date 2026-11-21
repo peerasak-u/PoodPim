@@ -281,18 +281,19 @@ pub fn redirect_stderr(file: std::fs::File) {
 }
 
 /// Shown when PoodPim is opened while it is already running (`tap`: press mode "tap to start").
-pub fn already_running(key: Binding, tap: bool) -> String {
+pub fn already_running(key: Binding, mode: crate::hotkey::TalkMode) -> String {
     let key = match key {
-        Binding::Modifier { key: ModKey::RightOption } => "Option ขวา",
-        Binding::Modifier { key: ModKey::RightControl } => "Control ขวา",
-        Binding::Modifier { key: ModKey::Fn } => "fn ",
-        Binding::Chord { .. } => &format!("{} ", key.label()),
+        Binding::Modifier { key: ModKey::RightOption } => "Option ขวา".to_string(),
+        Binding::Modifier { key: ModKey::RightControl } => "Control ขวา".to_string(),
+        Binding::Modifier { key: ModKey::Fn } => "fn".to_string(),
+        Binding::Chord { .. } => key.label(),
     };
-    let how = if tap { format!("แตะ {key}เพื่อเริ่มพูด แล้วแตะอีกครั้งเมื่อจบ") } else { format!("กด {key}ค้างไว้เพื่อพูดได้เลย") };
     format!(
         "PoodPim เปิดอยู่แล้ว\n\n\
-ไอคอนไมโครโฟน 🎙 อยู่ที่แถบเมนูด้านบนขวาของจอ ถ้าไม่เห็น อาจถูกรอยบากของจอบังไว้ \
-ลองกด ⌘ ค้างแล้วลากไอคอนอื่นออกจากแถบเมนู หรือดูที่ System Settings › Menu Bar\n\n{how}"
+{} อยู่ที่แถบเมนูด้านบนขวาของจอ ถ้าไม่เห็น อาจถูกรอยบากของจอบังไว้ \
+ลองกด ⌘ ค้างแล้วลากไอคอนอื่นออกจากแถบเมนู หรือดูที่ System Settings › Menu Bar\n\n{}",
+        super::TRAY_ICON,
+        super::how_to_talk(&key, mode)
     )
 }
 

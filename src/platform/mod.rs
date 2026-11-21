@@ -33,6 +33,19 @@ pub const URL_PROMPT: &str = "ใส่ API URL ของเซิร์ฟเ�
 pub const KEY_PROMPT: &str = "ใส่ API key\n(ขอได้จากคนที่ส่งแอปนี้ให้คุณ)";
 pub const KEY_KEEP_PROMPT: &str = "ใส่ API key\n(เว้นว่างไว้ = ใช้ key เดิม)";
 
+/// How to start talking with this key and press mode, for the "already running" message.
+pub fn how_to_talk(key: &str, mode: crate::hotkey::TalkMode) -> String {
+    use crate::hotkey::TalkMode;
+    match mode {
+        TalkMode::Auto => format!("แตะ {key} เพื่อเริ่มพูด แอปจะหยุดเองเมื่อคุณเงียบ หรือกด {key} ค้างไว้ระหว่างพูดก็ได้"),
+        TalkMode::Hold => format!("กด {key} ค้างไว้เพื่อพูดได้เลย"),
+        TalkMode::Toggle => format!("แตะ {key} เพื่อเริ่มพูด แล้วแตะอีกครั้งเมื่อจบ"),
+    }
+}
+
+/// The tray icon, as the "already running" message describes it.
+const TRAY_ICON: &str = "ไอคอน PoodPim (กรอบคำพูดที่มีคลื่นเสียง)";
+
 pub type HotkeySink = Box<dyn Fn(HotkeyEvent) + Send + Sync + 'static>;
 
 #[cfg(target_os = "macos")]

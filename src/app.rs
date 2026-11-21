@@ -295,7 +295,7 @@ pub fn run() -> Result<()> {
     let Some(instance_lock) = lock else {
         // Opened again while running (often because the menu-bar icon is hidden): say so.
         let cfg = Config::load();
-        platform::alert(&platform::already_running(cfg.talk_key.usable(), cfg.talk_mode == TalkMode::Toggle));
+        platform::alert(&platform::already_running(cfg.talk_key.usable(), cfg.talk_mode));
         return Ok(());
     };
     #[allow(unused_mut)]
@@ -608,7 +608,7 @@ impl App {
             }
             m.set_cancel(cancel);
         });
-        self.overlay.set_talk_key(&key.label(), self.cfg.talk_mode == TalkMode::Toggle);
+        self.overlay.set_talk_key(&key.label(), self.cfg.talk_mode != TalkMode::Hold);
         eprintln!("talk key: {} ({:?})", key.label(), self.cfg.talk_mode);
     }
 
@@ -732,7 +732,7 @@ impl App {
         std::thread::spawn(move || {
             let yes = platform::confirm(
                 "ยังไม่มีโมเดลถอดเสียงในเครื่องนี้\n\nโหมด Local ต้องดาวน์โหลดโมเดลก่อน ขนาด 1 GB (ครั้งเดียว) \
-                 ระหว่างดาวน์โหลดดูความคืบหน้าได้ในเมนู 🎙\n\nหรือเลือก \"เซิร์ฟเวอร์ของทีม\" ในเมนู 🎙 › Settings… เพื่อถอดเสียงบนเซิร์ฟเวอร์แทน\n\nดาวน์โหลดเลยไหม?",
+                 ระหว่างดาวน์โหลดดูความคืบหน้าได้ในเมนูของ PoodPim บนแถบเมนู\n\nหรือเลือก \"เซิร์ฟเวอร์ของทีม\" ในเมนู PoodPim › Settings… เพื่อถอดเสียงบนเซิร์ฟเวอร์แทน\n\nดาวน์โหลดเลยไหม?",
                 "ดาวน์โหลด",
                 "ไว้ทีหลัง",
             );

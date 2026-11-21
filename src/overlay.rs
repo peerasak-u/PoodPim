@@ -65,7 +65,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// `key`: the talk key's name; `tap`: press mode "tap to start" (nothing to hold).
+    /// `key`: the talk key's name; `tap`: a tap starts talking (Auto or Toggle).
     fn label(&self, key: &str, tap: bool) -> String {
         match self {
             Phase::Hidden => String::new(),
