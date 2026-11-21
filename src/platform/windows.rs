@@ -162,6 +162,14 @@ pub fn accessibility_trusted(_prompt: bool) -> bool {
 
 pub const TALK_KEY_LABEL: &str = "Right Alt";
 
+/// Chords are macOS only (the talk key is always Right Alt here).
+pub fn key_name(code: u16) -> String {
+    format!("Key {code}")
+}
+
+/// The hook never changes kind (macOS: see its wake_hotkey_listener).
+pub fn wake_hotkey_listener() {}
+
 /// Starts the app at login: a value in HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run
 /// pointing at this exe (rewritten on every start, so it follows the app if it is moved).
 pub fn set_autostart(enable: bool) -> anyhow::Result<()> {

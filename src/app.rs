@@ -29,7 +29,7 @@ use crate::platform::{self, HotkeyEvent};
 use crate::segment::Segmenter;
 use crate::corrections::{self, Corrections};
 use crate::hotwords::{self, Hotwords};
-use crate::hotkey::{self, Binding, TalkMode};
+use crate::hotkey::{self, Binding, Reject, TalkMode};
 use crate::{inserter, model, update};
 
 const TAP: Duration = Duration::from_millis(300);
@@ -56,6 +56,8 @@ const ASSUME_WARM: Duration = Duration::from_secs(180);
 /// First update check after launch, then one a day.
 const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(20);
 const UPDATE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// Recording a new talk key in Settings gives up after this.
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(15);
 
 enum UserEvent {
     /// A key event and when it happened (stamped on the keyboard thread: the event loop may be
@@ -455,6 +457,12 @@ pub fn run() -> Result<()> {
             {
                 app.settings_close = true;
             }
+            // Recording a key only while Settings is in front: elsewhere the keys belong to other apps.
+            Event::WindowEvent { window_id, event: WindowEvent::Focused(false), .. }
+                if app.settings.as_ref().is_some_and(|w| w.id() == window_id) =>
+            {
+                app.cancel_capture();
+            }
             _ => {}
         }
         if app.want_settings {
@@ -554,9 +562,49 @@ impl App {
     /// Gives the keyboard tap and the pill the talk key and press mode from the config.
     fn apply_talk_key(&mut self) {
         let key = self.talk_key();
-        hotkey::lock().set_binding(key);
-        self.overlay.set_talk_key(key.label(), self.cfg.talk_mode == TalkMode::Toggle);
+        // (A key just recorded is in use already, and its release is still to be kept from apps.)
+        hotkey::update(|m| if m.binding() != key { m.set_binding(key) });
+        self.overlay.set_talk_key(&key.label(), self.cfg.talk_mode == TalkMode::Toggle);
         eprintln!("talk key: {} ({:?})", key.label(), self.cfg.talk_mode);
+    }
+
+    /// Settings › ปุ่มอื่น: the next key pressed (with its modifiers) becomes the talk key.
+    fn start_capture(&mut self) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        // Without Accessibility there is no keyboard tap, so the key pressed would never arrive.
+        if self.needs_permission {
+            self.settings_toast("ต้องให้สิทธิ์ Accessibility ก่อน ถึงจะตั้งปุ่มเองได้");
+            return;
+        }
+        if self.busy() {
+            self.settings_toast("รอให้ถอดเสียงเสร็จก่อน");
+            return;
+        }
+        let generation = hotkey::update(|m| m.set_capture(true));
+        eprintln!("recording a new talk key");
+        let p = self.proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(CAPTURE_TIMEOUT);
+            let timed_out = hotkey::update(|m| {
+                let current = m.capturing() && m.capture_gen() == generation;
+                if current {
+                    m.set_capture(false);
+                }
+                current
+            });
+            if timed_out {
+                let _ = p.send_event(UserEvent::Hotkey(HotkeyEvent::CaptureCancelled, Instant::now()));
+            }
+        });
+    }
+
+    fn cancel_capture(&mut self) {
+        if hotkey::lock().capturing() {
+            hotkey::update(|m| m.set_capture(false));
+            eprintln!("recording a new talk key: cancelled");
+        }
     }
 
     fn ready_text(&self) -> String {
@@ -1279,6 +1327,18 @@ impl App {
                     self.overlay.set(Phase::Cancelled);
                 }
             }
+            HotkeyEvent::Captured(b) => {
+                self.cfg.talk_key = b;
+                self.cfg.save();
+                self.apply_talk_key();
+                self.settings_toast(&format!("ตั้งปุ่มพูดเป็น {} แล้ว", b.label()));
+            }
+            HotkeyEvent::CaptureRejected(r) => self.settings_toast(match r {
+                Reject::Escape => "Esc ใช้ยกเลิกอยู่แล้ว เลือกปุ่มอื่น",
+                Reject::NeedsModifier => "ปุ่มนี้ใช้พิมพ์ตัวอักษร ให้กดร่วมกับ ⌃ ⌥ หรือ ⌘",
+                Reject::System => "ปุ่มลัดนี้ macOS หรือแอปต่างๆ ใช้อยู่แล้ว เลือกปุ่มอื่น",
+            }),
+            HotkeyEvent::CaptureCancelled => eprintln!("recording a new talk key: cancelled"),
             HotkeyEvent::PermissionMissing => {
                 eprintln!("Cannot watch the keyboard yet: grant Accessibility permission");
                 self.needs_permission = true;
@@ -1627,6 +1687,7 @@ impl App {
     }
 
     fn close_settings(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+        self.cancel_capture();
         self.settings = None;
         #[cfg(target_os = "macos")]
         {
@@ -1654,7 +1715,11 @@ impl App {
             "vocabCount": self.vocab_count,
             "correctionsCount": self.corrections_count,
             "talkKey": self.talk_key().label(),
-            "talkKeyId": match self.talk_key() { Binding::Modifier { key } => key },
+            "talkKeyId": match self.talk_key() {
+                Binding::Modifier { key } => serde_json::to_value(key).ok(),
+                Binding::Chord { .. } => None,
+            },
+            "talkCapturing": hotkey::lock().capturing(),
             "talkMode": self.cfg.talk_mode,
             "chooseKey": cfg!(target_os = "macos"),
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
@@ -1714,9 +1779,17 @@ impl App {
             }
             "talk_key" => {
                 let Ok(key) = serde_json::from_value(v["value"].clone()) else { return };
+                self.cancel_capture();
                 self.cfg.talk_key = Binding::Modifier { key };
                 self.cfg.save();
                 self.apply_talk_key();
+            }
+            "talk_capture" => {
+                if v["value"].as_bool().unwrap_or(false) {
+                    self.start_capture();
+                } else {
+                    self.cancel_capture();
+                }
             }
             "talk_mode" => {
                 let Ok(mode) = serde_json::from_value(v["value"].clone()) else { return };
