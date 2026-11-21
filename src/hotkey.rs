@@ -214,6 +214,9 @@ pub struct Matcher {
     dictating: bool,
     /// Which key Settings is recording, while `capturing`.
     target: Target,
+    /// Recording the talk key: this modifier is down with no other key yet. Let go like that,
+    /// it becomes the talk key on its own.
+    capture_mod: Option<ModKey>,
     /// The talk key is down, since then.
     held: Option<Instant>,
     /// TalkAborted was already sent for this press.
@@ -232,6 +235,7 @@ impl Matcher {
             cancel: Chord::ESCAPE,
             dictating: false,
             target: Target::Talk,
+            capture_mod: None,
             held: None,
             aborted: false,
             capturing: false,
@@ -276,6 +280,7 @@ impl Matcher {
     /// Starts or stops recording a new key; returns the recording's number.
     pub fn set_capture(&mut self, on: bool) -> u64 {
         self.capturing = on;
+        self.capture_mod = None;
         self.held = None;
         self.swallow_up = None;
         if on {
@@ -364,9 +369,20 @@ impl Matcher {
         }
     }
 
-    /// While recording a new key, every key but the modifiers is kept from apps.
+    /// While recording a new key, every key but the modifiers is kept from apps. A talk-key
+    /// modifier (Right ⌥, Right ⌃, fn) pressed and let go on its own becomes the talk key.
     fn feed_capture(&mut self, k: RawKey) -> Verdict {
         match k {
+            RawKey::Mod { key, down: true } => {
+                self.capture_mod = (self.target == Target::Talk).then_some(key);
+                Verdict::pass(None)
+            }
+            RawKey::Mod { key, down: false } if self.capture_mod == Some(key) => {
+                let b = Binding::Modifier { key };
+                self.set_capture(false);
+                self.set_binding(b);
+                Verdict::pass(Some(HotkeyEvent::Captured(b)))
+            }
             RawKey::Mod { .. } => Verdict::pass(None),
             RawKey::Escape => {
                 self.set_capture(false);
@@ -374,6 +390,7 @@ impl Matcher {
             }
             RawKey::Down { repeat: true, .. } | RawKey::Up { .. } => Verdict::swallow(None),
             RawKey::Down { code, mods, kind, repeat: false } => {
+                self.capture_mod = None; // a combination, not the modifier alone
                 let chord = Chord { code, mods };
                 let taken = match self.target {
                     Target::Talk if chord == self.cancel => Err(Reject::CancelKey),
@@ -628,9 +645,8 @@ mod tests {
         m.set_capture(true);
         assert!(m.wants_swallow());
         let chord = Binding::Chord { code: SPACE, mods: CTRL_OPT };
-        // The talk key does nothing while recording; modifiers reach apps.
+        // Modifiers reach apps; held for a combination, they are not taken on their own.
         assert_eq!(at(&mut m, t, 0, opt(true)), None);
-        assert_eq!(at(&mut m, t, 5, opt(false)), None);
         assert_eq!(at(&mut m, t, 10, ctrl(true)), None);
         assert_eq!(kept(&mut m, t, 20, space(CTRL_OPT)), Some(HotkeyEvent::Captured(chord)));
         assert!(!m.capturing());
@@ -638,6 +654,7 @@ mod tests {
         // Its release doesn't start anything and doesn't reach the app either.
         assert_eq!(kept(&mut m, t, 100, RawKey::Up { code: SPACE }), None);
         assert_eq!(at(&mut m, t, 150, ctrl(false)), None);
+        assert_eq!(at(&mut m, t, 160, opt(false)), None);
         assert_eq!(kept(&mut m, t, 500, space(CTRL_OPT)), Some(HotkeyEvent::TalkDown));
         // An F-key needs no modifier.
         m.set_capture(true);
@@ -729,6 +746,27 @@ mod tests {
         m.start_capture(Target::Talk);
         assert_eq!(kept(&mut m, t, 40, opt_backspace(false)), Some(HotkeyEvent::CaptureRejected(Reject::CancelKey)));
         assert_eq!(Chord { code: BACKSPACE, mods: OPT }.label(), "⌥ + Delete");
+    }
+
+    #[test]
+    fn records_a_modifier_pressed_on_its_own() {
+        let (mut m, t) = (Matcher::new(Binding::Chord { code: SPACE, mods: OPT }), Instant::now());
+        m.start_capture(Target::Talk);
+        // Right ⌥ held for a combination: not taken; the combination is judged instead.
+        assert_eq!(at(&mut m, t, 0, opt(true)), None);
+        assert_eq!(kept(&mut m, t, 10, down(E, OPT, KeyKind::Letter('E'))), Some(HotkeyEvent::Captured(Binding::Chord { code: E, mods: OPT })));
+        assert_eq!(at(&mut m, t, 20, opt(false)), None);
+        // Right ⌃ pressed and let go on its own: the talk key.
+        kept(&mut m, t, 30, RawKey::Up { code: E });
+        m.start_capture(Target::Talk);
+        assert_eq!(at(&mut m, t, 40, ctrl(true)), None);
+        assert_eq!(at(&mut m, t, 50, ctrl(false)), Some(HotkeyEvent::Captured(Binding::Modifier { key: ModKey::RightControl })));
+        assert!(!m.capturing());
+        // Not for the cancel key.
+        m.start_capture(Target::Cancel);
+        assert_eq!(at(&mut m, t, 60, opt(true)), None);
+        assert_eq!(at(&mut m, t, 70, opt(false)), None);
+        assert!(m.capturing());
     }
 
     #[test]

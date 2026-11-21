@@ -1844,13 +1844,6 @@ impl App {
                     self.apply_autostart();
                 }
             }
-            "talk_key" => {
-                let Ok(key) = serde_json::from_value(v["value"].clone()) else { return };
-                self.cancel_capture();
-                self.cfg.talk_key = Binding::Modifier { key };
-                self.cfg.save();
-                self.apply_talk_key();
-            }
             "talk_capture" | "cancel_capture" => {
                 if v["value"].as_bool().unwrap_or(false) {
                     self.start_capture(if v["cmd"] == "cancel_capture" { Target::Cancel } else { Target::Talk });
