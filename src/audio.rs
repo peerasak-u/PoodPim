@@ -9,7 +9,21 @@ use anyhow::{Context, Result};
 use crate::features::SAMPLE_RATE;
 
 #[cfg(feature = "desktop")]
-pub use recorder::Recorder;
+pub use recorder::{Recorder, input_names};
+
+/// Reads the stored microphone name leniently: anything but a string (a hand-edited
+/// `config.json`) means the system default instead of failing the whole file.
+pub fn de_device_name<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+    let v = <serde_json::Value as serde::Deserialize>::deserialize(d)?;
+    Ok(v.as_str().map(str::to_string))
+}
+
+/// Which of `names` to open for the stored microphone `wanted`: the first exact match, or
+/// None for the system default (nothing stored, or that device is not connected now).
+pub fn choose(names: &[String], wanted: Option<&str>) -> Option<usize> {
+    let wanted = wanted?;
+    names.iter().position(|n| n == wanted)
+}
 
 #[cfg(feature = "desktop")]
 mod recorder {
@@ -26,16 +40,19 @@ pub struct Recorder {
     stream: Option<cpal::Stream>,
     buf: Arc<Mutex<Vec<f32>>>,
     rate: u32,
+    device_name: String,
 }
 
 impl Recorder {
     pub fn new() -> Self {
-        Self { stream: None, buf: Arc::new(Mutex::new(Vec::new())), rate: SAMPLE_RATE }
+        Self { stream: None, buf: Arc::new(Mutex::new(Vec::new())), rate: SAMPLE_RATE, device_name: String::new() }
     }
 
-    pub fn start(&mut self) -> Result<()> {
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or_else(|| anyhow!("no microphone found"))?;
+    /// Starts recording from the microphone named `wanted`, or the system default when it is
+    /// None or not connected.
+    pub fn start(&mut self, wanted: Option<&str>) -> Result<()> {
+        let device = pick(wanted)?;
+        self.device_name = name_of(&device);
         let supported = device.default_input_config().context("microphone config")?;
         let config = supported.config();
         self.rate = config.sample_rate;
@@ -53,14 +70,14 @@ impl Recorder {
         Ok(())
     }
 
-    /// Opens the default microphone briefly on a background thread and closes it again. The
-    /// first time a process opens it can take seconds (2.7 s measured on a Mac), long enough
-    /// to lose the first words or a whole short phrase; afterwards it takes tens of ms.
-    pub fn warm_up() {
-        std::thread::spawn(|| {
+    /// Opens the microphone (`wanted`, as in `start`) briefly on a background thread and closes
+    /// it again. The first time a process opens it can take seconds (2.7 s measured on a Mac),
+    /// long enough to lose the first words or a whole short phrase; afterwards it takes tens of ms.
+    pub fn warm_up(wanted: Option<String>) {
+        std::thread::spawn(move || {
             let t0 = std::time::Instant::now();
             let r = (|| -> Result<()> {
-                let device = cpal::default_host().default_input_device().ok_or_else(|| anyhow!("no microphone found"))?;
+                let device = pick(wanted.as_deref())?;
                 let supported = device.default_input_config().context("microphone config")?;
                 let stream = match supported.sample_format() {
                     cpal::SampleFormat::F32 => build::<f32>(&device, supported.config(), 1, Arc::new(Mutex::new(Vec::new())))?,
@@ -78,6 +95,11 @@ impl Recorder {
                 Err(e) => eprintln!("microphone warm-up: {e:#}"),
             }
         });
+    }
+
+    /// The name of the microphone the last `start` opened.
+    pub fn device_name(&self) -> &str {
+        &self.device_name
     }
 
     /// The microphone's sample rate (the buffer is mono at this rate).
@@ -101,6 +123,35 @@ impl Recorder {
         let raw = self.stop_raw();
         resample(&raw, self.rate, SAMPLE_RATE)
     }
+}
+
+/// The names of the connected input devices, in the system's order.
+pub fn input_names() -> Vec<String> {
+    match cpal::default_host().input_devices() {
+        Ok(devices) => devices.map(|d| name_of(&d)).collect(),
+        Err(e) => {
+            eprintln!("listing microphones: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn name_of(device: &cpal::Device) -> String {
+    device.description().map(|d| d.name().to_string()).unwrap_or_default()
+}
+
+/// The microphone named `wanted`, or the system default when it is None or not connected.
+fn pick(wanted: Option<&str>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    if let Some(name) = wanted {
+        let devices: Vec<cpal::Device> = host.input_devices().map(|d| d.collect()).unwrap_or_default();
+        let names: Vec<String> = devices.iter().map(name_of).collect();
+        match super::choose(&names, Some(name)) {
+            Some(i) => return Ok(devices.into_iter().nth(i).expect("index from names")),
+            None => eprintln!("microphone {name:?} not found: using the default"),
+        }
+    }
+    host.default_input_device().ok_or_else(|| anyhow!("no microphone found"))
 }
 
 fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, ch: usize, buf: Arc<Mutex<Vec<f32>>>) -> Result<cpal::Stream>
@@ -214,4 +265,34 @@ pub fn encode_wav(audio: &[f32]) -> Vec<u8> {
         w.finalize().expect("wav finalize");
     }
     buf.into_inner()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::choose;
+
+    fn names() -> Vec<String> {
+        vec!["MacBook Pro Microphone".into(), "USB Audio Device".into(), "USB Audio Device".into()]
+    }
+
+    #[test]
+    fn choose_nothing_stored_uses_default() {
+        assert_eq!(choose(&names(), None), None);
+    }
+
+    #[test]
+    fn choose_exact_match_first_wins() {
+        assert_eq!(choose(&names(), Some("USB Audio Device")), Some(1));
+        assert_eq!(choose(&names(), Some("usb audio device")), None);
+    }
+
+    #[test]
+    fn choose_missing_name_uses_default() {
+        assert_eq!(choose(&names(), Some("AirPods")), None);
+    }
+
+    #[test]
+    fn choose_empty_list_uses_default() {
+        assert_eq!(choose(&[], Some("USB Audio Device")), None);
+    }
 }
