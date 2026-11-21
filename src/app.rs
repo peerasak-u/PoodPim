@@ -116,6 +116,7 @@ enum State {
     Error,
 }
 
+mod lists;
 mod mic;
 
 struct Ui {
@@ -1027,6 +1028,7 @@ impl App {
                 match corrections::add_to_user_file(&heard, &wanted) {
                     Ok(()) => {
                         self.reload_vocabulary();
+                        self.push_lists();
                         eprintln!("added a correction");
                     }
                     Err(e) => show_alert(format!("บันทึกไม่ได้: {e}")),
@@ -1857,6 +1859,7 @@ impl App {
                 self.settings_toast("บันทึกแล้ว");
             }
             "mic" => self.mic_message(&v),
+            "lists" => self.lists_message(&v),
             "open" => match text("what").as_str() {
                 "vocabulary" => {
                     self.reload_vocabulary();
@@ -1874,19 +1877,6 @@ impl App {
                 "accessibility" => platform::open_permission_settings(),
                 _ => {}
             },
-            "correction" => {
-                let (heard, wanted) = (text("heard"), text("wanted"));
-                if heard.is_empty() || wanted.is_empty() {
-                    return;
-                }
-                match corrections::add_to_user_file(&heard, &wanted) {
-                    Ok(()) => {
-                        self.reload_vocabulary();
-                        self.settings_toast(&format!("เพิ่มแล้ว: {heard} → {wanted}"));
-                    }
-                    Err(e) => self.settings_toast(&format!("บันทึกไม่ได้: {e}")),
-                }
-            }
             "download" => self.start_download(),
             "update" => self.check_update(),
             "uninstall" => self.ask_uninstall(),

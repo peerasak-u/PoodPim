@@ -363,27 +363,323 @@
 
 <section class="page" data-page="vocab">
 <h1 class="page-title">คำศัพท์</h1>
-<div class="card">
-  <div class="row">
-    <div class="text"><div class="label">คำศัพท์ของฉัน <span class="count" id="vocab-count"></span></div>
-      <div class="hint">คำที่อยากให้ออกมาเป็นภาษาอังกฤษ ช่วยให้ถอดคำเหล่านี้ถูกบ่อยขึ้น</div></div>
-    <button class="btn" data-open="vocabulary">แก้ไข…</button>
+<style>
+  .lists-bar { display: flex; gap: 10px; align-items: center; margin: 0 0 8px; }
+  .lists-bar .field.search { flex: 1; min-width: 0; }
+  .lists-hint { color: var(--muted); font-size: 12.5px; margin: 0 4px 14px; }
+  .lists-hint .warn { color: #ff9f0a; }
+  .cat { margin-bottom: 12px; }
+  .cat.drop { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .cat-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 2px 14px; min-height: 40px; }
+  .cat-title { font-weight: 600; cursor: text; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cat-title.untitled { color: var(--muted); font-weight: 500; }
+  .cat-head .field { font-weight: 600; padding: 3px 8px; }
+  .cat-head .tools { margin-left: auto; display: flex; gap: 2px; flex: none; opacity: 0; transition: opacity .12s; }
+  .cat:hover .cat-head .tools, .cat-head .tools:focus-within, .cat-head .tools .armed { opacity: 1; }
+  .tool.armed { color: var(--danger); font-size: 12px; padding: 4px 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 14px 14px; }
+  .chip { display: inline-flex; align-items: center; padding: 3px 3px 3px 9px; border-radius: 7px; background: var(--seg);
+    font-size: 13px; line-height: 1.35; cursor: grab; max-width: 100%; }
+  .chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip button { border: 0; background: transparent; color: var(--muted); font: inherit; padding: 0 5px; cursor: pointer; opacity: 0; }
+  .chip:hover button, .chip button:focus-visible { opacity: 1; }
+  .chip button:hover { color: var(--text); }
+  .chip.dragging, .pair-row.dragging { opacity: .4; }
+  mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 3px; }
+  .chip-input { font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 1px dashed var(--field-line);
+    border-radius: 7px; padding: 3px 9px; width: 150px; -webkit-user-select: text; user-select: text; }
+  .chip-input:focus { outline: none; border-style: solid; border-color: var(--accent); width: 240px; }
+  .chip-input.edit { width: 180px; border-style: solid; border-color: var(--accent); }
+  .pairs { padding: 4px 0 8px; }
+  .pair-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px 5px 14px; cursor: grab; }
+  .pair-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+  .pair-row .heard { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; flex: 1 1 55%; }
+  .pair-row .heard > span { background: var(--seg); border-radius: 6px; padding: 1px 7px; font-size: 12.5px; }
+  .pair-row .arrow { color: var(--muted); flex: none; }
+  .pair-row .wanted { flex: 1 1 35%; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .pair-row .tools { display: flex; gap: 2px; flex: none; opacity: 0; }
+  .pair-row:hover .tools, .pair-row .tools:focus-within { opacity: 1; }
+  .pair-form { display: flex; gap: 8px; align-items: center; padding: 6px 10px 6px 14px; }
+  .pair-form .field { font-size: 13px; padding: 5px 8px; }
+  .pair-form .field.heard-in { flex: 1 1 55%; }
+  .pair-form .field.wanted-in { flex: 1 1 35%; }
+  .pair-form .arrow { color: var(--muted); }
+  .lists-empty { color: var(--muted); text-align: center; padding: 30px 0; }
+  .lists-foot { display: flex; gap: 8px; justify-content: space-between; margin-top: 4px; }
+</style>
+<div class="lists-bar">
+  <div class="seg" role="group" aria-label="รายการ">
+    <button data-list="vocabulary">คำศัพท์ของฉัน <span class="count" data-count="vocabulary"></span></button>
+    <button data-list="corrections">แก้คำอัตโนมัติ <span class="count" data-count="corrections"></span></button>
   </div>
-  <div class="row">
-    <div class="text"><div class="label">แก้คำอัตโนมัติ <span class="count" id="corr-count"></span></div>
-      <div class="hint">คำที่แอปได้ยินผิดซ้ำๆ แล้วเปลี่ยนให้ทุกครั้ง</div></div>
-    <button class="btn" data-open="corrections">แก้ไข…</button>
-  </div>
-  <div class="row stack">
-    <div class="hint">เพิ่มคำแก้: คำที่ PoodPim พิมพ์ผิด → คำที่ถูก</div>
-    <div class="pair">
-      <input class="field" id="heard" placeholder="เช่น ฟีดแบ็ก" spellcheck="false" autocomplete="off">
-      <span class="arrow">→</span>
-      <input class="field" id="wanted" placeholder="เช่น feedback" spellcheck="false" autocomplete="off">
-      <button class="btn" id="add-correction" disabled>เพิ่ม</button>
-    </div>
-  </div>
+  <input class="field search" id="list-search" type="search" placeholder="ค้นหา…" spellcheck="false" autocomplete="off">
 </div>
+<div class="lists-hint" id="lists-hint"></div>
+<div id="lists-body"></div>
+<div class="lists-foot">
+  <button class="btn" id="new-category">+ หมวดใหม่</button>
+  <button class="btn" id="open-list">เปิดเป็นไฟล์…</button>
+</div>
+<script>
+  (() => {
+    const HINT = {
+      vocabulary: "คำอังกฤษที่อยากให้พิมพ์เป็นตัวอังกฤษ ช่วยให้ถอดคำเหล่านี้ถูกบ่อยขึ้น · วางทีละหลายคำได้ คั่นด้วยบรรทัดใหม่หรือจุลภาค · ดับเบิลคลิกเพื่อแก้ · ลากไปหมวดอื่นได้",
+      corrections: "คำที่แอปได้ยินผิดซ้ำๆ → คำที่อยากได้ · ได้ยินผิดหลายแบบ คั่นด้วยจุลภาค · วางหลายบรรทัดแบบ \"ได้ยิน = อยากได้\" ได้ · ลากไปหมวดอื่นได้",
+    };
+    const UNIT = { vocabulary: "คำ", corrections: "คู่" };
+    const body = document.getElementById("lists-body");
+    const search = document.getElementById("list-search");
+    let data = null, list = "vocabulary", query = "", draft = null, dragged = null, focusAfter = null;
+    try { list = localStorage.getItem("list") || list; } catch {}
+
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const svg = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
+    const EDIT = svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'), REMOVE = svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+      TRASH = svg('<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>');
+    const toolBtn = (html, label, fn) => {
+      const b = el("button", "tool"); b.innerHTML = html; b.title = label; b.setAttribute("aria-label", label);
+      b.addEventListener("click", (e) => { e.stopPropagation(); fn(b); }); return b;
+    };
+    // Text with the search match marked.
+    const marked = (text) => {
+      const s = el("span");
+      const i = query ? text.toLowerCase().indexOf(query) : -1;
+      if (i < 0) { s.textContent = text; return s; }
+      s.append(text.slice(0, i), el("mark", "", text.slice(i, i + query.length)), text.slice(i + query.length));
+      return s;
+    };
+    const words = (text) => text.split(/[\n,，]+/).map((w) => w.trim()).filter(Boolean);
+    const pair = (line) => {
+      const i = line.indexOf("=");
+      if (i < 0) return null;
+      const heard = words(line.slice(0, i).replace(/\n/g, ",")), wanted = line.slice(i + 1).trim();
+      return heard.length && wanted && !wanted.includes("=") ? `${heard.join(", ")} = ${wanted}` : null;
+    };
+    const split = (item) => { const i = item.indexOf("="); return { heard: words(item.slice(0, i)), wanted: item.slice(i + 1).trim() }; };
+    const key = (item) => (list === "vocabulary" ? item.toLowerCase() : item);
+
+    const cats = () => data[list];
+    const save = () => {
+      render();
+      send({ cmd: "lists", action: "save", list, categories: cats().filter((c) => c.items.length) });
+    };
+    // Adds items to category `ci` ("draft" = the new one); says which were there already.
+    const add = (ci, items) => {
+      const have = new Set(cats().flatMap((c) => c.items.map(key)));
+      const fresh = [], repeated = [];
+      for (const it of items) (have.has(key(it)) ? repeated : fresh).push(it), have.add(key(it));
+      if (repeated.length) window.toast(`มีอยู่แล้ว: ${repeated.slice(0, 3).join(", ")}${repeated.length > 3 ? ` และอีก ${repeated.length - 3}` : ""}`);
+      if (!fresh.length) return false;
+      if (ci === "draft") { cats().unshift({ title: draft.title.trim(), items: fresh }); draft = null; ci = 0; }
+      else cats()[ci].items.push(...fresh);
+      focusAfter = { list, ci };
+      save();
+      return true;
+    };
+
+    window.renderLists = (d) => { data = d; render(); };
+
+    function render() {
+      if (!data) return;
+      const active = document.activeElement;
+      if (!focusAfter && active && active.dataset.addFor != null && body.contains(active))
+        focusAfter = { list, ci: active.dataset.addFor === "draft" ? "draft" : Number(active.dataset.addFor) };
+      document.querySelectorAll("[data-list]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.list === list)));
+      document.querySelectorAll("[data-count]").forEach((c) => {
+        const n = data[c.dataset.count].reduce((s, x) => s + x.items.length, 0); c.textContent = `(${n})`;
+      });
+      const total = cats().reduce((s, x) => s + x.items.length, 0);
+      const hint = document.getElementById("lists-hint");
+      hint.textContent = HINT[list];
+      if (list === "vocabulary" && total > 350) hint.append(" · ", el("span", "warn", `ตอนนี้มี ${total} คำ: ได้ผลดีที่ราว 150–350 คำ`));
+      const cards = [];
+      if (draft && draft.list === list) cards.push(card(draft, "draft"));
+      cats().forEach((c, ci) => { const k = card(c, ci); if (k) cards.push(k); });
+      if (!cards.length) cards.push(el("div", "lists-empty", query ? "ไม่พบ" : "ยังไม่มีรายการ"));
+      body.replaceChildren(...cards);
+      if (focusAfter && focusAfter.list === list) body.querySelector(`[data-add-for="${focusAfter.ci}"]`)?.focus();
+      focusAfter = null;
+    }
+
+    function card(c, ci) {
+      const titleHit = query && c.title.toLowerCase().includes(query);
+      const shown = c.items.map((it, ii) => [it, ii]).filter(([it]) => !query || titleHit || it.toLowerCase().includes(query));
+      if (query && !shown.length && ci !== "draft") return null;
+      const k = el("div", "card cat");
+      const head = el("div", "cat-head");
+      if (ci === "draft" || c.editing) {
+        const t = el("input", "field"); t.value = c.title; t.placeholder = "ชื่อหมวด"; t.spellcheck = false;
+        const done = (keep) => {
+          if (ci === "draft") { draft.title = t.value; return; }
+          delete c.editing;
+          if (keep && t.value.trim() && t.value.trim() !== c.title) { c.title = t.value.trim(); save(); } else render();
+        };
+        t.addEventListener("input", () => { if (ci === "draft") draft.title = t.value; });
+        t.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); if (ci === "draft") body.querySelector('[data-add-for="draft"]')?.focus(); else done(true); }
+          if (e.key === "Escape") { e.stopPropagation(); if (ci === "draft") { draft = null; render(); } else done(false); }
+        });
+        if (ci !== "draft") t.addEventListener("blur", () => c.editing && done(true));
+        head.append(t);
+        setTimeout(() => { if (!t.value || c.editing) { t.focus(); t.select(); } });
+      } else {
+        const t = el("span", c.title ? "cat-title" : "cat-title untitled"); t.append(marked(c.title || "ไม่มีหมวด"));
+        t.title = "คลิกเพื่อเปลี่ยนชื่อ";
+        t.addEventListener("click", () => { c.editing = true; render(); });
+        head.append(t);
+      }
+      head.append(el("span", "count", ci === "draft" ? "" : String(c.items.length)));
+      const tools = el("span", "tools");
+      if (ci === "draft") tools.append(toolBtn(REMOVE, "ยกเลิก", () => { draft = null; render(); }));
+      else {
+        tools.append(toolBtn(EDIT, "เปลี่ยนชื่อหมวด", () => { c.editing = true; render(); }));
+        tools.append(toolBtn(TRASH, "ลบหมวด", (b) => {
+          if (!b.classList.contains("armed")) {
+            b.classList.add("armed"); b.textContent = `ลบ ${c.items.length} ${UNIT[list]}?`;
+            setTimeout(() => b.isConnected && render(), 3000); return;
+          }
+          cats().splice(ci, 1); save();
+        }));
+      }
+      head.append(tools);
+      k.append(head, list === "vocabulary" ? chips(c, ci, shown) : pairs(c, ci, shown));
+      if (ci !== "draft") {
+        k.addEventListener("dragover", (e) => { if (!dragged || dragged.ci === ci) return; e.preventDefault(); k.classList.add("drop"); });
+        k.addEventListener("dragleave", (e) => { if (!k.contains(e.relatedTarget)) k.classList.remove("drop"); });
+        k.addEventListener("drop", (e) => {
+          e.preventDefault(); k.classList.remove("drop");
+          if (!dragged || dragged.ci === ci) return;
+          const [it] = cats()[dragged.ci].items.splice(dragged.ii, 1);
+          c.items.push(it); dragged = null; save();
+        });
+      }
+      return k;
+    }
+
+    const draggable = (node, ci, ii) => {
+      if (ci === "draft") return;
+      node.draggable = true;
+      node.addEventListener("dragstart", (e) => { dragged = { ci, ii }; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", ""); node.classList.add("dragging"); });
+      node.addEventListener("dragend", () => { dragged = null; node.classList.remove("dragging"); body.querySelectorAll(".drop").forEach((x) => x.classList.remove("drop")); });
+    };
+
+    function chips(c, ci, shown) {
+      const box = el("div", "chips");
+      for (const [it, ii] of shown) {
+        const chip = el("span", "chip"); chip.append(marked(it));
+        const x = el("button", "", "×"); x.title = "ลบ"; x.setAttribute("aria-label", `ลบ ${it}`);
+        x.addEventListener("click", () => { c.items.splice(ii, 1); save(); });
+        chip.append(x);
+        chip.addEventListener("dblclick", () => {
+          const input = el("input", "chip-input edit"); input.value = it; input.spellcheck = false;
+          let settled = false;
+          const finish = (keep) => {
+            if (settled) return; settled = true;
+            const next = keep ? words(input.value) : [it];
+            const others = new Set(c.items.filter((_, j) => j !== ii).concat(cats().filter((o) => o !== c).flatMap((o) => o.items)).map(key));
+            c.items.splice(ii, 1, ...next.filter((w) => !others.has(key(w))));
+            save();
+          };
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") finish(true);
+            if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+          });
+          input.addEventListener("blur", () => finish(true));
+          chip.replaceWith(input); input.focus(); input.select();
+        });
+        draggable(chip, ci, ii);
+        box.append(chip);
+      }
+      const input = el("input", "chip-input"); input.placeholder = "+ เพิ่มคำ"; input.spellcheck = false;
+      input.dataset.addFor = ci;
+      const take = () => { const w = words(input.value); input.value = ""; if (w.length) add(ci, w); };
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === ",") { e.preventDefault(); take(); }
+        if (e.key === "Escape") { e.stopPropagation(); input.value = ""; input.blur(); }
+      });
+      input.addEventListener("paste", (e) => {
+        const text = e.clipboardData.getData("text");
+        if (!/[\n,，]/.test(text)) return;
+        e.preventDefault(); input.value = ""; add(ci, words(text));
+      });
+      box.append(input);
+      return box;
+    }
+
+    function pairs(c, ci, shown) {
+      const box = el("div", "pairs");
+      for (const [it, ii] of shown) {
+        const p = split(it);
+        const row = el("div", "pair-row");
+        const heard = el("span", "heard"); p.heard.forEach((h) => heard.append(marked(h)));
+        const wanted = el("span", "wanted"); wanted.append(marked(p.wanted));
+        const tools = el("span", "tools");
+        const edit = () => {
+          const form = pairForm(ci, p.heard.join(", "), p.wanted, (line) => { c.items.splice(ii, 1, line); save(); }, () => render());
+          row.replaceWith(form); form.querySelector(".heard-in").focus();
+        };
+        tools.append(toolBtn(EDIT, "แก้", edit), toolBtn(REMOVE, "ลบ", () => { c.items.splice(ii, 1); save(); }));
+        row.append(heard, el("span", "arrow", "→"), wanted, tools);
+        row.addEventListener("dblclick", edit);
+        draggable(row, ci, ii);
+        box.append(row);
+      }
+      box.append(pairForm(ci, "", "", null, null));
+      return box;
+    }
+
+    // Heard → wanted inputs. `done(line)` saves an edit; without it the form adds new pairs.
+    function pairForm(ci, heardText, wantedText, done, cancel) {
+      const form = el("div", "pair-form");
+      const heard = el("input", "field heard-in"); heard.value = heardText; heard.placeholder = "คำที่ได้ยินผิด (หลายแบบคั่นด้วย ,)"; heard.spellcheck = false;
+      const wanted = el("input", "field wanted-in"); wanted.value = wantedText; wanted.placeholder = "คำที่ถูก"; wanted.spellcheck = false;
+      if (!done) heard.dataset.addFor = ci;
+      const button = el("button", done ? "btn primary" : "btn", done ? "บันทึก" : "เพิ่ม");
+      const submit = () => {
+        const line = pair(`${heard.value} = ${wanted.value}`);
+        if (!line) { window.toast("ใส่ทั้งคำที่ได้ยินและคำที่ถูก"); return; }
+        if (done) { done(line); return; }
+        if (add(ci, [line])) { heard.value = ""; wanted.value = ""; }
+      };
+      button.addEventListener("click", submit);
+      for (const f of [heard, wanted]) f.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); if (f === heard && !wanted.value.trim()) wanted.focus(); else submit(); }
+        if (e.key === "Escape") { e.stopPropagation(); if (cancel) cancel(); else { heard.value = ""; wanted.value = ""; f.blur(); } }
+      });
+      // Pasted "heard = wanted" lines are added as they are; other pasted lines are heard forms.
+      heard.addEventListener("paste", (e) => {
+        const text = e.clipboardData.getData("text");
+        if (done) return;
+        if (text.includes("=")) {
+          e.preventDefault();
+          const lines = text.split(/\n/).map(pair).filter(Boolean);
+          if (lines.length) add(ci, lines); else window.toast("ไม่พบบรรทัดแบบ \"ได้ยิน = อยากได้\"");
+        } else if (/\n/.test(text)) {
+          e.preventDefault(); heard.value = words([heard.value, text].join(",")).join(", ");
+        }
+      });
+      form.append(heard, el("span", "arrow", "→"), wanted, button);
+      if (cancel) form.append(toolBtn(REMOVE, "ยกเลิก", cancel));
+      return form;
+    }
+
+    document.querySelectorAll("[data-list]").forEach((b) => b.addEventListener("click", () => {
+      list = b.dataset.list; draft = null;
+      try { localStorage.setItem("list", list); } catch {}
+      render();
+    }));
+    search.addEventListener("input", () => { query = search.value.trim().toLowerCase(); render(); });
+    search.addEventListener("keydown", (e) => { if (e.key === "Escape" && search.value) { e.stopPropagation(); search.value = ""; query = ""; render(); } });
+    document.getElementById("new-category").addEventListener("click", () => {
+      draft = { list, title: "", items: [] }; search.value = ""; query = ""; render();
+      document.querySelector("main").scrollTop = 0;
+    });
+    document.getElementById("open-list").addEventListener("click", () => send({ cmd: "open", what: list }));
+    // The files may have been edited elsewhere (เปิดเป็นไฟล์…, or the Recent menu's Fix a word).
+    window.addEventListener("focus", () => send({ cmd: "lists", action: "get" }));
+    document.addEventListener("DOMContentLoaded", () => send({ cmd: "lists", action: "get" }));
+  })();
+</script>
 </section>
 
 <section class="page" data-page="post">
@@ -533,8 +829,6 @@
       o.dataset.custom = ""; $("unload").add(o);
     }
     $("unload").value = unload;
-    $("vocab-count").textContent = `(${s.vocabCount} คำ)`;
-    $("corr-count").textContent = `(${s.correctionsCount} คู่)`;
     $("update").disabled = !s.updates;
     $("uninstall-row").classList.toggle("hidden", !s.updates);
     requestAnimationFrame(() => document.body.classList.add("ready"));
@@ -569,16 +863,6 @@
     send({ cmd: "server", url, key: $("key").value.trim() });
     $("key").value = "";
   });
-  const heard = $("heard"), wanted = $("wanted"), add = $("add-correction");
-  const ready = () => (add.disabled = !(heard.value.trim() && wanted.value.trim()));
-  heard.addEventListener("input", ready); wanted.addEventListener("input", ready);
-  const addCorrection = () => {
-    if (add.disabled) return;
-    send({ cmd: "correction", heard: heard.value.trim(), wanted: wanted.value.trim() });
-    heard.value = ""; wanted.value = ""; ready(); heard.focus();
-  };
-  add.addEventListener("click", addCorrection);
-  wanted.addEventListener("keydown", (e) => { if (e.key === "Enter") addCorrection(); });
   document.addEventListener("keydown", (e) => {
     if (state && state.talkCapturing) { e.preventDefault(); return; } // the key being recorded
     if (e.key === "Escape" || ((e.metaKey || e.ctrlKey) && e.key === "w")) send({ cmd: "close" });

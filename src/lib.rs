@@ -10,6 +10,7 @@ pub mod features;
 pub mod fillers;
 pub mod hotwords;
 pub mod model;
+pub mod lists;
 pub mod numbers;
 pub mod pipeline;
 pub mod segment;

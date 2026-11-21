@@ -84,6 +84,11 @@ impl SettingsWindow {
         }
     }
 
+    /// The vocabulary and corrections as categories (Settings › คำศัพท์).
+    pub fn show_lists(&self, json: &str) {
+        let _ = self.webview.evaluate_script(&format!("window.renderLists && window.renderLists({json})"));
+    }
+
     /// The page asked for the state again (it has just loaded).
     pub fn forget_state(&mut self) {
         self.shown.clear();
