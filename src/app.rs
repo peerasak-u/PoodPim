@@ -2050,7 +2050,8 @@ impl Waking {
     }
 }
 
-/// Draws a microphone glyph. Idle/loading icons are macOS "template" images (adapt to light/dark menu bars).
+/// Draws the app's mark: a speech bubble with the waveform and text cursor cut out of it.
+/// Idle/loading icons are macOS "template" images (adapt to light/dark menu bars).
 fn icon_for(state: State) -> (Icon, bool) {
     let (rgb, alpha, template): ([u8; 3], f32, bool) = match state {
         State::Recording => ([0xE5, 0x39, 0x35], 1.0, false),
@@ -2059,11 +2060,19 @@ fn icon_for(state: State) -> (Icon, bool) {
         _ => (idle_rgb(), 0.45, true),
     };
     const N: u32 = 36;
+    const SS: u32 = 4; // samples per side, for smooth edges
     let mut px = vec![0u8; (N * N * 4) as usize];
     for y in 0..N {
         for x in 0..N {
-            let (u, v) = ((x as f32 + 0.5) / N as f32, (y as f32 + 0.5) / N as f32);
-            let cover = mic_coverage(u, v);
+            let mut hits = 0;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let u = (x as f32 + (sx as f32 + 0.5) / SS as f32) * 36.0 / N as f32;
+                    let v = (y as f32 + (sy as f32 + 0.5) / SS as f32) * 36.0 / N as f32;
+                    hits += mark_covers(u, v) as u32;
+                }
+            }
+            let cover = hits as f32 / (SS * SS) as f32;
             let i = ((y * N + x) * 4) as usize;
             px[i..i + 3].copy_from_slice(&rgb);
             px[i + 3] = (cover * alpha * 255.0) as u8;
@@ -2076,17 +2085,48 @@ fn idle_rgb() -> [u8; 3] {
     if cfg!(windows) { [0xF0, 0xF0, 0xF0] } else { [0, 0, 0] }
 }
 
-fn mic_coverage(u: f32, v: f32) -> f32 {
-    let aa = 0.03;
-    let fill = |d: f32| (0.5 - d / aa).clamp(0.0, 1.0);
-    // capsule (mic head)
-    let (cx, top, bot, r) = (0.5, 0.22, 0.46, 0.13);
-    let cy = v.clamp(top, bot);
-    let head = ((u - cx).powi(2) + (v - cy).powi(2)).sqrt() - r;
-    // holder: lower half of a ring
-    let ring = if v >= 0.46 { (((u - 0.5).powi(2) + (v - 0.46).powi(2)).sqrt() - 0.25).abs() - 0.035 } else { 1.0 };
-    // stem and base
-    let stem = if (0.71..=0.86).contains(&v) { (u - 0.5).abs() - 0.035 } else { 1.0 };
-    let base = if (0.31..=0.69).contains(&u) { (v - 0.86).abs() - 0.035 } else { 1.0 };
-    fill(head.min(ring).min(stem).min(base))
+/// The mark on a 36×36 grid, shaped after assets/logo.svg: a rounded bubble with its tail
+/// at the lower left, minus four waveform bars and the cursor.
+fn mark_covers(x: f32, y: f32) -> bool {
+    const MID: f32 = 15.5;
+    // bubble body: 30×21 at (3, 5), corner radius 7
+    let (r, hw, hh) = (7.0f32, 15.0f32, 10.5f32);
+    let dx = ((x - 18.0).abs() - (hw - r)).max(0.0);
+    let dy = ((y - MID).abs() - (hh - r)).max(0.0);
+    let body = dx * dx + dy * dy <= r * r;
+    // tail: a triangle hanging from the bottom edge
+    let tail = in_triangle((x, y), (9.0, 24.0), (15.5, 24.0), (8.9, 30.8));
+    if !(body || tail) {
+        return false;
+    }
+    // (centre x, width, height) of the bars, then the cursor
+    const CUTS: [(f32, f32, f32); 5] =
+        [(8.5, 2.6, 5.9), (12.9, 2.6, 12.1), (17.3, 2.6, 8.5), (21.7, 2.6, 3.6), (26.55, 1.9, 13.5)];
+    !CUTS.iter().any(|&(cx, w, h)| {
+        let rad = w / 2.0;
+        let dy = ((y - MID).abs() - (h / 2.0 - rad)).max(0.0);
+        (x - cx).powi(2) + dy * dy <= rad * rad
+    })
+}
+
+fn in_triangle(p: (f32, f32), a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> bool {
+    let side = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| (p.0 - r.0) * (q.1 - r.1) - (q.0 - r.0) * (p.1 - r.1);
+    let (d1, d2, d3) = (side(p, a, b), side(p, b, c), side(p, c, a));
+    !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mark_covers;
+
+    #[test]
+    fn mark_is_a_bubble_with_the_waveform_cut_out() {
+        assert!(mark_covers(5.0, 15.5), "bubble, left of the bars");
+        assert!(mark_covers(10.7, 15.5), "between the first two bars");
+        assert!(!mark_covers(12.9, 15.5), "a bar is cut out");
+        assert!(!mark_covers(26.55, 10.0), "the cursor is cut out");
+        assert!(mark_covers(9.5, 28.0), "the tail");
+        assert!(!mark_covers(30.0, 30.0), "outside, right of the tail");
+        assert!(!mark_covers(3.5, 5.5), "a rounded corner");
+    }
 }
