@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,9 @@ pub struct Config {
     /// Free the local model's memory (~0.75 GB) after a while without dictation; it loads
     /// again, while the user speaks, on the next press of the talk key.
     pub unload_when_idle: bool,
+    /// Minutes without dictation before the model is freed (0 = right after each dictation).
+    #[serde(deserialize_with = "lenient_minutes")]
+    pub unload_after_min: u32,
     /// Hands-free mode (tap the talk key): type each part as soon as it is transcribed, while
     /// the user is still speaking, instead of all of it at the end.
     pub live_typing: bool,
@@ -53,11 +57,19 @@ impl Default for Config {
             start_at_login: true,
             numbers_as_digits: true,
             unload_when_idle: false,
+            unload_after_min: 15,
             live_typing: true,
             live_preview: true,
             model_upgrade_declined: false,
         }
     }
+}
+
+/// A bad `unload_after_min` (a string, a negative number) falls back to 15 instead of failing
+/// the whole file, which would reset every setting.
+fn lenient_minutes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_u64().map_or(15, |n| n.min(u32::MAX as u64) as u32))
 }
 
 pub fn path() -> PathBuf {
@@ -111,7 +123,52 @@ impl Config {
         }
     }
 
+    /// How long without dictation before the local model is freed (None: never).
+    pub fn unload_after(&self) -> Option<Duration> {
+        self.unload_when_idle.then(|| Duration::from_secs(u64::from(self.unload_after_min.min(24 * 60)) * 60))
+    }
+
     pub fn server(&self) -> Server {
         Server { url: self.server_url.trim().to_string(), api_key: self.api_key.trim().to_string() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn after(json: &str) -> Option<Duration> {
+        serde_json::from_str::<Config>(json).unwrap().unload_after()
+    }
+
+    const MIN: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn unload_off_by_default() {
+        assert_eq!(after("{}"), None);
+    }
+
+    #[test]
+    fn old_config_with_unload_on_keeps_15_min() {
+        assert_eq!(after(r#"{"unload_when_idle":true}"#), Some(15 * MIN));
+    }
+
+    #[test]
+    fn unload_minutes_are_read_and_clamped() {
+        assert_eq!(after(r#"{"unload_when_idle":true,"unload_after_min":5}"#), Some(5 * MIN));
+        assert_eq!(after(r#"{"unload_when_idle":true,"unload_after_min":0}"#), Some(Duration::ZERO));
+        assert_eq!(after(r#"{"unload_when_idle":true,"unload_after_min":99999}"#), Some(24 * 60 * MIN));
+    }
+
+    #[test]
+    fn unload_off_ignores_minutes() {
+        assert_eq!(after(r#"{"unload_when_idle":false,"unload_after_min":5}"#), None);
+    }
+
+    #[test]
+    fn bad_unload_minutes_do_not_reset_the_file() {
+        let c: Config = serde_json::from_str(r#"{"unload_when_idle":true,"unload_after_min":"x","mixed_english":false}"#).unwrap();
+        assert_eq!(c.unload_after(), Some(15 * MIN));
+        assert!(!c.mixed_english);
     }
 }
