@@ -36,6 +36,9 @@ pub struct Config {
     pub mixed_english: bool,
     /// The key held (or tapped) to talk, see hotkey.rs. Windows always uses Right Alt.
     pub talk_key: Binding,
+    /// The key that cancels a dictation (macOS; Windows always uses Esc).
+    #[serde(deserialize_with = "lenient")]
+    pub cancel_key: crate::hotkey::Chord,
     /// Hold or tap / hold only / tap to start and stop.
     pub talk_mode: TalkMode,
     /// Put the previous clipboard back after pasting.
@@ -77,6 +80,7 @@ impl Default for Config {
             api_key: String::new(),
             mixed_english: true,
             talk_key: Binding::DEFAULT,
+            cancel_key: Default::default(),
             talk_mode: TalkMode::HoldOrTap,
             restore_clipboard: true,
             start_at_login: true,

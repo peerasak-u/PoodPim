@@ -1,6 +1,6 @@
 //! The talk key: which key it is and how a press is read (both settings), and the matcher that
 //! turns the macOS keyboard tap's key events into talk events, decides which keys are kept from
-//! apps (a chord such as ⌃⌥Space), and records a new key from Settings.
+//! apps (a chord such as ⌃ + ⌥ + Space), and records a new talk or cancel key from Settings.
 //!
 //! Windows keeps its fixed Right Alt hook (platform/windows.rs) and doesn't use the matcher.
 //! The press mode is read in app.rs, so it works on both.
@@ -55,20 +55,57 @@ impl Binding {
         if cfg!(windows) { Binding::DEFAULT } else { self }
     }
 
-    /// For the menu, the pill and Settings: "Right ⌥", "⌃⌥Space", "F5".
+    /// For the menu, the pill and Settings: "Right ⌥", "⌃ + ⌥ + Space", "F5".
     pub fn label(&self) -> String {
         match *self {
             Binding::Modifier { key: ModKey::RightOption } => platform::TALK_KEY_LABEL.into(),
             Binding::Modifier { key: ModKey::RightControl } => "Right ⌃".into(),
             Binding::Modifier { key: ModKey::Fn } => "fn".into(),
-            Binding::Chord { code, mods } => {
-                let names = [(mods.control, "⌃"), (mods.option, "⌥"), (mods.shift, "⇧"), (mods.command, "⌘")];
-                let mut s: String = names.iter().filter(|(on, _)| *on).map(|(_, n)| *n).collect();
-                s.push_str(&platform::key_name(code));
-                s
-            }
+            Binding::Chord { code, mods } => Chord { code, mods }.label(),
         }
     }
+}
+
+/// A key with exactly these modifiers (macOS virtual keycode): the cancel key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Chord {
+    pub code: u16,
+    #[serde(default)]
+    pub mods: Mods,
+}
+
+impl Chord {
+    /// Esc on its own: the default cancel key, the one Windows always uses, and the key that
+    /// stops recording a new key in Settings.
+    pub const ESCAPE: Chord = Chord { code: 53, mods: Mods { control: false, option: false, shift: false, command: false } };
+
+    /// "Esc", "⌥ + ⌫", "⌃ + ⌥ + Space": the modifiers, then the key, joined with " + ".
+    pub fn label(&self) -> String {
+        let m = self.mods;
+        let names = [(m.control, "⌃"), (m.option, "⌥"), (m.shift, "⇧"), (m.command, "⌘")];
+        let mut parts: Vec<String> = names.iter().filter(|(on, _)| *on).map(|(_, n)| n.to_string()).collect();
+        parts.push(platform::key_name(self.code));
+        parts.join(" + ")
+    }
+
+    /// The cancel key in use: on Windows always Esc (its keyboard hook is fixed).
+    pub fn usable(self) -> Chord {
+        if cfg!(windows) { Chord::ESCAPE } else { self }
+    }
+}
+
+impl Default for Chord {
+    fn default() -> Self {
+        Self::ESCAPE
+    }
+}
+
+/// Which key Settings is recording.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Target {
+    #[default]
+    Talk,
+    Cancel,
 }
 
 /// A key as far as recording it as the talk key goes (platform::key_kind).
@@ -84,11 +121,15 @@ pub enum KeyKind {
     Other,
 }
 
-/// Why a key can't be the talk key.
+/// Why a key can't be the talk (or cancel) key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reject {
-    /// Esc cancels.
+    /// Esc stops the recording of a key, so it can't be recorded.
     Escape,
+    /// It is the talk key.
+    TalkKey,
+    /// It is the cancel key.
+    CancelKey,
     /// A typing key needs ⌃, ⌥ or ⌘ with it.
     NeedsModifier,
     /// A shortcut macOS or every app already uses (⌘Space, ⌘Tab, ⌘C…).
@@ -140,7 +181,7 @@ pub enum TalkMode {
 pub enum RawKey {
     /// A modifier key that can be the talk key went down or up.
     Mod { key: ModKey, down: bool },
-    /// Esc went down.
+    /// Esc went down (with any modifiers).
     Escape,
     /// Any other key went down; `repeat`: the OS repeating a key held down.
     Down { code: u16, mods: Mods, kind: KeyKind, repeat: bool },
@@ -167,6 +208,12 @@ impl Verdict {
 
 pub struct Matcher {
     binding: Binding,
+    cancel: Chord,
+    /// Recording or finishing a dictation: a cancel key other than Esc is kept from apps then
+    /// (Esc reaches them, as it always has).
+    dictating: bool,
+    /// Which key Settings is recording, while `capturing`.
+    target: Target,
     /// The talk key is down, since then.
     held: Option<Instant>,
     /// TalkAborted was already sent for this press.
@@ -180,7 +227,17 @@ pub struct Matcher {
 
 impl Matcher {
     pub const fn new(binding: Binding) -> Self {
-        Self { binding, held: None, aborted: false, capturing: false, capture_gen: 0, swallow_up: None }
+        Self {
+            binding,
+            cancel: Chord::ESCAPE,
+            dictating: false,
+            target: Target::Talk,
+            held: None,
+            aborted: false,
+            capturing: false,
+            capture_gen: 0,
+            swallow_up: None,
+        }
     }
 
     pub fn binding(&self) -> Binding {
@@ -193,7 +250,30 @@ impl Matcher {
         self.swallow_up = None;
     }
 
-    /// Starts or stops recording a new talk key; returns the recording's number.
+    pub fn cancel(&self) -> Chord {
+        self.cancel
+    }
+
+    pub fn set_cancel(&mut self, c: Chord) {
+        self.cancel = c;
+    }
+
+    pub fn set_dictating(&mut self, on: bool) {
+        self.dictating = on;
+    }
+
+    /// What is being recorded (meaningful while `capturing`).
+    pub fn target(&self) -> Target {
+        self.target
+    }
+
+    /// Starts recording a new `target` key; returns the recording's number.
+    pub fn start_capture(&mut self, target: Target) -> u64 {
+        self.target = target;
+        self.set_capture(true)
+    }
+
+    /// Starts or stops recording a new key; returns the recording's number.
     pub fn set_capture(&mut self, on: bool) -> u64 {
         self.capturing = on;
         self.held = None;
@@ -215,7 +295,7 @@ impl Matcher {
     /// Keys must be able to be kept from apps: the macOS tap is then an active one (in the path
     /// of every keystroke) instead of listen-only, so only for a chord or while recording a key.
     pub fn wants_swallow(&self) -> bool {
-        self.capturing || matches!(self.binding, Binding::Chord { .. })
+        self.capturing || matches!(self.binding, Binding::Chord { .. }) || (self.dictating && self.cancel != Chord::ESCAPE)
     }
 
     pub fn feed(&mut self, k: RawKey, at: Instant) -> Verdict {
@@ -229,7 +309,18 @@ impl Matcher {
             return Verdict::swallow(None);
         }
         if k == RawKey::Escape {
-            return Verdict::pass(Some(HotkeyEvent::Escape));
+            return Verdict::pass((self.cancel == Chord::ESCAPE).then_some(HotkeyEvent::Escape));
+        }
+        if let RawKey::Down { code, mods, repeat, .. } = k
+            && code == self.cancel.code
+            && mods == self.cancel.mods
+        {
+            // Kept from apps only while there is something to cancel; otherwise it does its usual job.
+            if !self.dictating {
+                return Verdict::pass(None);
+            }
+            self.swallow_up = Some(code);
+            return Verdict::swallow((!repeat).then_some(HotkeyEvent::Escape));
         }
         match self.binding {
             Binding::Modifier { key: bound } => Verdict::pass(match k {
@@ -283,12 +374,26 @@ impl Matcher {
             }
             RawKey::Down { repeat: true, .. } | RawKey::Up { .. } => Verdict::swallow(None),
             RawKey::Down { code, mods, kind, repeat: false } => {
-                let event = match check_chord(kind, mods) {
+                let chord = Chord { code, mods };
+                let taken = match self.target {
+                    Target::Talk if chord == self.cancel => Err(Reject::CancelKey),
+                    Target::Cancel if self.binding == (Binding::Chord { code, mods }) => Err(Reject::TalkKey),
+                    _ => check_chord(kind, mods),
+                };
+                let event = match taken {
                     Ok(()) => {
-                        let b = Binding::Chord { code, mods };
                         self.set_capture(false);
-                        self.set_binding(b);
-                        Some(HotkeyEvent::Captured(b))
+                        match self.target {
+                            Target::Talk => {
+                                let b = Binding::Chord { code, mods };
+                                self.set_binding(b);
+                                Some(HotkeyEvent::Captured(b))
+                            }
+                            Target::Cancel => {
+                                self.cancel = chord;
+                                Some(HotkeyEvent::CancelCaptured(chord))
+                            }
+                        }
                     }
                     Err(r) => Some(HotkeyEvent::CaptureRejected(r)),
                 };
@@ -581,6 +686,51 @@ mod tests {
         assert_eq!(check_chord(KeyKind::Other, Mods { option: true, ..NONE }), Ok(()));
     }
 
+    const BACKSPACE: u16 = 51;
+    const OPT: Mods = Mods { option: true, ..NONE };
+
+    fn opt_backspace(repeat: bool) -> RawKey {
+        RawKey::Down { code: BACKSPACE, mods: OPT, kind: KeyKind::Other, repeat }
+    }
+
+    #[test]
+    fn custom_cancel_key_works_only_while_dictating() {
+        let (mut m, t) = (Matcher::new(Binding::DEFAULT), Instant::now());
+        m.set_cancel(Chord { code: BACKSPACE, mods: OPT });
+        assert!(!m.wants_swallow(), "no active tap while idle");
+        // Idle: ⌥⌫ deletes a word as usual, and Esc no longer cancels.
+        assert_eq!(at(&mut m, t, 0, opt_backspace(false)), None);
+        assert_eq!(at(&mut m, t, 10, RawKey::Escape), None);
+        // Dictating: ⌥⌫ cancels and is kept from apps, repeats and release included.
+        m.set_dictating(true);
+        assert!(m.wants_swallow());
+        assert_eq!(kept(&mut m, t, 20, opt_backspace(false)), Some(HotkeyEvent::Escape));
+        assert_eq!(kept(&mut m, t, 30, opt_backspace(true)), None);
+        assert_eq!(kept(&mut m, t, 40, RawKey::Up { code: BACKSPACE }), None);
+        // ⌫ without ⌥ is not the cancel key.
+        assert_eq!(at(&mut m, t, 50, RawKey::Down { code: BACKSPACE, mods: NONE, kind: KeyKind::Other, repeat: false }), None);
+        m.set_dictating(false);
+        assert!(!m.wants_swallow());
+    }
+
+    #[test]
+    fn records_a_cancel_key_but_not_the_talk_key() {
+        let (mut m, t) = (Matcher::new(Binding::Chord { code: SPACE, mods: OPT }), Instant::now());
+        m.start_capture(Target::Cancel);
+        assert_eq!(kept(&mut m, t, 0, space(OPT)), Some(HotkeyEvent::CaptureRejected(Reject::TalkKey)));
+        assert_eq!(kept(&mut m, t, 10, down(E, NONE, KeyKind::Letter('E'))), Some(HotkeyEvent::CaptureRejected(Reject::NeedsModifier)));
+        let c = Chord { code: BACKSPACE, mods: OPT };
+        assert_eq!(kept(&mut m, t, 20, opt_backspace(false)), Some(HotkeyEvent::CancelCaptured(c)));
+        assert!(!m.capturing());
+        assert_eq!(m.cancel(), c);
+        assert_eq!(m.binding(), Binding::Chord { code: SPACE, mods: OPT }, "talk key unchanged");
+        // And the talk key can't become the cancel key.
+        kept(&mut m, t, 30, RawKey::Up { code: BACKSPACE });
+        m.start_capture(Target::Talk);
+        assert_eq!(kept(&mut m, t, 40, opt_backspace(false)), Some(HotkeyEvent::CaptureRejected(Reject::CancelKey)));
+        assert_eq!(Chord { code: BACKSPACE, mods: OPT }.label(), "⌥ + Delete");
+    }
+
     #[test]
     fn escape_cancels_capture() {
         let (mut m, t) = (Matcher::new(Binding::DEFAULT), Instant::now());
@@ -598,9 +748,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn chord_labels() {
-        assert_eq!(Binding::Chord { code: SPACE, mods: CTRL_OPT }.label(), "⌃⌥Space");
+        assert_eq!(Binding::Chord { code: SPACE, mods: CTRL_OPT }.label(), "⌃ + ⌥ + Space");
         assert_eq!(Binding::Chord { code: 96, mods: NONE }.label(), "F5");
-        assert_eq!(Binding::Chord { code: 40, mods: Mods { shift: true, command: true, ..NONE } }.label(), "⇧⌘K");
+        assert_eq!(Binding::Chord { code: 40, mods: Mods { shift: true, command: true, ..NONE } }.label(), "⇧ + ⌘ + K");
+        assert_eq!(Chord::ESCAPE.label(), "Esc");
         assert_eq!(platform::key_kind(SPACE), KeyKind::Space);
         assert_eq!(platform::key_kind(12), KeyKind::Letter('Q'));
         assert_eq!(platform::key_kind(53), KeyKind::Escape);

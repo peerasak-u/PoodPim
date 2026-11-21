@@ -29,7 +29,7 @@ use crate::platform::{self, HotkeyEvent};
 use crate::segment::Segmenter;
 use crate::corrections::{self, Corrections};
 use crate::hotwords::{self, Hotwords};
-use crate::hotkey::{self, Binding, Reject, TalkMode};
+use crate::hotkey::{self, Binding, Chord, Reject, TalkMode, Target};
 use crate::{inserter, model, update};
 
 const TAP: Duration = Duration::from_millis(300);
@@ -238,6 +238,8 @@ struct App {
     decoder_int8_started: bool,
     /// The text to paste is with the language model (see post.rs); Esc drops it.
     polishing: bool,
+    /// What the keyboard tap was last told by sync_dictating.
+    dictating: bool,
 }
 
 /// Locks a file in the settings folder; None if another copy of the app holds it.
@@ -371,6 +373,7 @@ pub fn run() -> Result<()> {
         remove_fp32_after_load: false,
         decoder_int8_started: false,
         polishing: false,
+        dictating: false,
     };
     app.reload_vocabulary();
     let mut ui: Option<Ui> = None;
@@ -391,6 +394,7 @@ pub fn run() -> Result<()> {
             }
         }
         app.unload_if_idle();
+        app.sync_dictating();
         let animating = app.overlay.tick();
         match event {
             Event::NewEvents(StartCause::Init) => {
@@ -568,13 +572,28 @@ impl App {
         self.cfg.talk_key.usable()
     }
 
+    /// The cancel key in use (Windows: always Esc).
+    fn cancel_key(&self) -> Chord {
+        self.cfg.cancel_key.usable()
+    }
+
     /// The tray menu's line on how to use the talk key.
     fn talk_hint(&self) -> String {
-        let key = self.talk_key().label();
+        let (key, cancel) = (self.talk_key().label(), self.cancel_key().label());
         match self.cfg.talk_mode {
-            TalkMode::HoldOrTap => format!("Hold {key} to talk · tap = hands-free · Esc = cancel"),
-            TalkMode::Hold => format!("Hold {key} to talk · Esc = cancel"),
-            TalkMode::Toggle => format!("Tap {key} to start, tap again to finish · Esc = cancel"),
+            TalkMode::HoldOrTap => format!("Hold {key} to talk · tap = hands-free · {cancel} = cancel"),
+            TalkMode::Hold => format!("Hold {key} to talk · {cancel} = cancel"),
+            TalkMode::Toggle => format!("Tap {key} to start, tap again to finish · {cancel} = cancel"),
+        }
+    }
+
+    /// Tells the keyboard tap whether there is a dictation to cancel, so a cancel key other than
+    /// Esc is kept from apps only then (see hotkey::Matcher).
+    fn sync_dictating(&mut self) {
+        let on = self.state == State::Recording || self.polishing;
+        if on != self.dictating {
+            self.dictating = on;
+            hotkey::update(|m| m.set_dictating(on));
         }
     }
 
@@ -582,13 +601,20 @@ impl App {
     fn apply_talk_key(&mut self) {
         let key = self.talk_key();
         // (A key just recorded is in use already, and its release is still to be kept from apps.)
-        hotkey::update(|m| if m.binding() != key { m.set_binding(key) });
+        let cancel = self.cancel_key();
+        hotkey::update(|m| {
+            if m.binding() != key {
+                m.set_binding(key);
+            }
+            m.set_cancel(cancel);
+        });
         self.overlay.set_talk_key(&key.label(), self.cfg.talk_mode == TalkMode::Toggle);
         eprintln!("talk key: {} ({:?})", key.label(), self.cfg.talk_mode);
     }
 
-    /// Settings › ปุ่มอื่น: the next key pressed (with its modifiers) becomes the talk key.
-    fn start_capture(&mut self) {
+    /// Settings › ปุ่มอื่น / ปุ่มยกเลิก: the next key pressed (with its modifiers) becomes the
+    /// talk or cancel key.
+    fn start_capture(&mut self, target: Target) {
         if !cfg!(target_os = "macos") {
             return;
         }
@@ -601,8 +627,8 @@ impl App {
             self.settings_toast("รอให้ถอดเสียงเสร็จก่อน");
             return;
         }
-        let generation = hotkey::update(|m| m.set_capture(true));
-        eprintln!("recording a new talk key");
+        let generation = hotkey::update(|m| m.start_capture(target));
+        eprintln!("recording a new {target:?} key");
         let p = self.proxy.clone();
         std::thread::spawn(move || {
             std::thread::sleep(CAPTURE_TIMEOUT);
@@ -622,7 +648,7 @@ impl App {
     fn cancel_capture(&mut self) {
         if hotkey::lock().capturing() {
             hotkey::update(|m| m.set_capture(false));
-            eprintln!("recording a new talk key: cancelled");
+            eprintln!("recording a new key: cancelled");
         }
     }
 
@@ -1356,12 +1382,20 @@ impl App {
                 self.apply_talk_key();
                 self.settings_toast(&format!("ตั้งปุ่มพูดเป็น {} แล้ว", b.label()));
             }
+            HotkeyEvent::CancelCaptured(c) => {
+                self.cfg.cancel_key = c;
+                self.cfg.save();
+                self.apply_talk_key();
+                self.settings_toast(&format!("ตั้งปุ่มยกเลิกเป็น {} แล้ว", c.label()));
+            }
             HotkeyEvent::CaptureRejected(r) => self.settings_toast(match r {
-                Reject::Escape => "Esc ใช้ยกเลิกอยู่แล้ว เลือกปุ่มอื่น",
+                Reject::Escape => "Esc ใช้หยุดการตั้งปุ่ม เลือกปุ่มอื่น",
+                Reject::TalkKey => "ปุ่มนี้เป็นปุ่มพูดอยู่ เลือกปุ่มอื่น",
+                Reject::CancelKey => "ปุ่มนี้เป็นปุ่มยกเลิกอยู่ เลือกปุ่มอื่น",
                 Reject::NeedsModifier => "ปุ่มนี้ใช้พิมพ์ตัวอักษร ให้กดร่วมกับ ⌃ ⌥ หรือ ⌘",
                 Reject::System => "ปุ่มลัดนี้ macOS หรือแอปต่างๆ ใช้อยู่แล้ว เลือกปุ่มอื่น",
             }),
-            HotkeyEvent::CaptureCancelled => eprintln!("recording a new talk key: cancelled"),
+            HotkeyEvent::CaptureCancelled => eprintln!("recording a new key: cancelled"),
             HotkeyEvent::PermissionMissing => {
                 eprintln!("Cannot watch the keyboard yet: grant Accessibility permission");
                 self.needs_permission = true;
@@ -1722,6 +1756,10 @@ impl App {
 
     /// What the Settings page shows (JSON for its render()).
     fn settings_state(&self) -> String {
+        let capturing = {
+            let m = hotkey::lock();
+            m.capturing().then(|| m.target())
+        };
         serde_json::json!({
             "version": update::CURRENT,
             "status": if self.needs_permission { "ต้องให้สิทธิ์ Accessibility ก่อน" } else { self.status_text.as_str() },
@@ -1743,7 +1781,10 @@ impl App {
                 Binding::Modifier { key } => serde_json::to_value(key).ok(),
                 Binding::Chord { .. } => None,
             },
-            "talkCapturing": hotkey::lock().capturing(),
+            "talkCapturing": capturing == Some(Target::Talk),
+            "cancelKey": self.cancel_key().label(),
+            "cancelIsEsc": self.cancel_key() == Chord::ESCAPE,
+            "cancelCapturing": capturing == Some(Target::Cancel),
             "talkMode": self.cfg.talk_mode,
             "pillPosition": self.cfg.pill_position,
             "chooseKey": cfg!(target_os = "macos"),
@@ -1810,12 +1851,18 @@ impl App {
                 self.cfg.save();
                 self.apply_talk_key();
             }
-            "talk_capture" => {
+            "talk_capture" | "cancel_capture" => {
                 if v["value"].as_bool().unwrap_or(false) {
-                    self.start_capture();
+                    self.start_capture(if v["cmd"] == "cancel_capture" { Target::Cancel } else { Target::Talk });
                 } else {
                     self.cancel_capture();
                 }
+            }
+            "cancel_key_reset" => {
+                self.cancel_capture();
+                self.cfg.cancel_key = Chord::ESCAPE;
+                self.cfg.save();
+                self.apply_talk_key();
             }
             "talk_mode" => {
                 let Ok(mode) = serde_json::from_value(v["value"].clone()) else { return };

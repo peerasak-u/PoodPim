@@ -223,8 +223,14 @@
   </div>
   <div class="row" id="talk-capture-row">
     <div class="text"><div class="label">ปุ่มอื่น หรือปุ่มลัด</div>
-      <div class="hint">เช่น ⌥Space, ⌃⌥Space หรือ F5 · แอปอื่นจะไม่เห็นปุ่มนี้ (ยกเว้นในช่องรหัสผ่าน)</div></div>
+      <div class="hint">เช่น ⌥ + Space, ⌃ + ⌥ + Space หรือ F5 · แอปอื่นจะไม่เห็นปุ่มนี้ (ยกเว้นในช่องรหัสผ่าน)</div></div>
     <button class="btn" id="talk-capture"></button>
+  </div>
+  <div class="row" id="cancel-row">
+    <div class="text"><div class="label">ปุ่มยกเลิก</div>
+      <div class="hint" id="cancel-hint"></div></div>
+    <button class="btn" id="cancel-reset">ใช้ Esc</button>
+    <button class="btn" id="cancel-capture"></button>
   </div>
   <div class="row">
     <div class="text"><div class="label">วิธีกด</div>
@@ -786,8 +792,14 @@
     $("permission").classList.toggle("hidden", !s.needsPermission);
     $("talk-key-row").classList.toggle("hidden", !s.chooseKey);
     $("talk-capture-row").classList.toggle("hidden", !s.chooseKey);
-    $("talk-capture").textContent = s.talkCapturing ? "กดปุ่มที่ต้องการ… (Esc = ยกเลิก)"
+    $("talk-capture").textContent = s.talkCapturing ? "กดปุ่มที่ต้องการ… (Esc = หยุด)"
       : s.talkKeyId ? "ตั้งปุ่มเอง…" : `${s.talkKey} · เปลี่ยน…`;
+    $("cancel-row").classList.toggle("hidden", !s.chooseKey);
+    $("cancel-capture").textContent = s.cancelCapturing ? "กดปุ่มที่ต้องการ… (Esc = หยุด)" : `${s.cancelKey} · เปลี่ยน…`;
+    $("cancel-reset").classList.toggle("hidden", s.cancelIsEsc || s.cancelCapturing);
+    $("cancel-hint").textContent = s.cancelIsEsc
+      ? "ทิ้งสิ่งที่กำลังพูดอยู่ · Esc ยังส่งถึงแอปตามปกติ"
+      : "ทิ้งสิ่งที่กำลังพูดอยู่ · ใช้เฉพาะตอนกำลังพูด นอกนั้นปุ่มนี้ทำงานในแอปตามปกติ · Esc ไม่ยกเลิกแล้ว";
     document.querySelectorAll("[data-talk-key]").forEach((btn) =>
       btn.setAttribute("aria-pressed", String(btn.dataset.talkKey === s.talkKeyId)));
     $("talk-key-hint").textContent = !s.talkKeyId ? `ตอนนี้: ${s.talkKey}`
@@ -802,9 +814,9 @@
       toggle: "แตะครั้งแรกเริ่มฟัง แตะอีกครั้งเมื่อจบ",
     }[s.talkMode];
     $("footer").textContent = {
-      hold_or_tap: `กด ${s.talkKey} ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · Esc = ยกเลิก`,
-      hold: `กด ${s.talkKey} ค้างไว้เพื่อพูด · Esc = ยกเลิก`,
-      toggle: `แตะ ${s.talkKey} เพื่อเริ่มพูด แตะอีกครั้งเมื่อจบ · Esc = ยกเลิก`,
+      hold_or_tap: `กด ${s.talkKey} ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · ${s.cancelKey} = ยกเลิก`,
+      hold: `กด ${s.talkKey} ค้างไว้เพื่อพูด · ${s.cancelKey} = ยกเลิก`,
+      toggle: `แตะ ${s.talkKey} เพื่อเริ่มพูด แตะอีกครั้งเมื่อจบ · ${s.cancelKey} = ยกเลิก`,
     }[s.talkMode];
     document.querySelectorAll("[data-pill-position]").forEach((btn) =>
       btn.setAttribute("aria-pressed", String(btn.dataset.pillPosition === s.pillPosition)));
@@ -849,6 +861,8 @@
   document.querySelectorAll("[data-pill-position]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "pill_position", value: btn.dataset.pillPosition })));
   $("talk-capture").addEventListener("click", () => send({ cmd: "talk_capture", value: !state.talkCapturing }));
+  $("cancel-capture").addEventListener("click", () => send({ cmd: "cancel_capture", value: !state.cancelCapturing }));
+  $("cancel-reset").addEventListener("click", () => send({ cmd: "cancel_key_reset" }));
   document.querySelectorAll("[data-open]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "open", what: btn.dataset.open })));
   $("unload").addEventListener("change", (e) =>
@@ -864,7 +878,7 @@
     $("key").value = "";
   });
   document.addEventListener("keydown", (e) => {
-    if (state && state.talkCapturing) { e.preventDefault(); return; } // the key being recorded
+    if (state && (state.talkCapturing || state.cancelCapturing)) { e.preventDefault(); return; } // the key being recorded
     if (e.key === "Escape" || ((e.metaKey || e.ctrlKey) && e.key === "w")) send({ cmd: "close" });
   });
   const showPage = (name) => {

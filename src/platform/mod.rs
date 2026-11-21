@@ -1,9 +1,9 @@
 //! OS-specific pieces: the global push-to-talk key, the paste keystroke, permissions.
 //!
 //! Push-to-talk key: Right Option by default on macOS (a setting, see hotkey.rs), always Right
-//! Alt on Windows. Esc cancels.
+//! Alt on Windows. Esc cancels (macOS: or another key, a setting).
 
-use crate::hotkey::{Binding, Reject};
+use crate::hotkey::{Binding, Chord, Reject};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
@@ -12,9 +12,12 @@ pub enum HotkeyEvent {
     /// macOS: another key went down right after the talk key (hotkey::TYPING_GUARD): the user
     /// is typing a combination (⌥+e), not dictating. Never sent on Windows.
     TalkAborted,
+    /// The cancel key (Esc unless set otherwise).
     Escape,
     /// macOS, Settings recording a new talk key: this one was pressed (and is now in use).
     Captured(Binding),
+    /// macOS, Settings recording a new cancel key: this one was pressed (and is now in use).
+    CancelCaptured(Chord),
     /// Recording a new talk key: this key can't be used; still recording.
     CaptureRejected(Reject),
     /// Recording a new talk key: Esc, or it timed out.
