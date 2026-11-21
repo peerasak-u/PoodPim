@@ -227,9 +227,12 @@ pub fn redirect_stderr(file: std::fs::File) {
     }
 }
 
-/// Shown when PoodPim is opened while it is already running.
-pub const ALREADY_RUNNING: &str = "PoodPim เปิดอยู่แล้ว\n\nไอคอนไมโครโฟนอยู่ที่มุมขวาล่างของจอ (ข้างนาฬิกา) \
-ถ้าไม่เห็น ให้กดลูกศร ^ ข้างนาฬิกา\n\nกด Alt ขวาค้างไว้เพื่อพูดได้เลย";
+/// Shown when PoodPim is opened while it is already running (`tap`: press mode "tap to start";
+/// the talk key is always Right Alt here).
+pub fn already_running(_key: crate::hotkey::Binding, tap: bool) -> String {
+    let how = if tap { "แตะ Alt ขวาเพื่อเริ่มพูด แล้วแตะอีกครั้งเมื่อจบ" } else { "กด Alt ขวาค้างไว้เพื่อพูดได้เลย" };
+    format!("PoodPim เปิดอยู่แล้ว\n\nไอคอนไมโครโฟนอยู่ที่มุมขวาล่างของจอ (ข้างนาฬิกา) ถ้าไม่เห็น ให้กดลูกศร ^ ข้างนาฬิกา\n\n{how}")
+}
 
 /// A message box with an OK button. Returns when it is closed.
 pub fn alert(message: &str) {

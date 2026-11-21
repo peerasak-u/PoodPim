@@ -25,10 +25,11 @@ use crate::config::{Backend, Config};
 use crate::features::SAMPLE_RATE;
 use crate::pipeline::{Outcome, Pipeline};
 use crate::overlay::{Overlay, Phase};
-use crate::platform::{self, HotkeyEvent, TALK_KEY_LABEL};
+use crate::platform::{self, HotkeyEvent};
 use crate::segment::Segmenter;
 use crate::corrections::{self, Corrections};
 use crate::hotwords::{self, Hotwords};
+use crate::hotkey::{self, Binding, TalkMode};
 use crate::{inserter, model, update};
 
 const TAP: Duration = Duration::from_millis(300);
@@ -119,6 +120,8 @@ struct Ui {
     add_correction: MenuItem,
     settings: MenuItem,
     download: MenuItem,
+    /// How to use the talk key (follows the key and press mode set in Settings).
+    hint: MenuItem,
     quit: MenuItem,
     /// Whether `permission` / `download` are in the menu now (only while they are needed).
     shown_permission: std::cell::Cell<bool>,
@@ -269,7 +272,8 @@ pub fn run() -> Result<()> {
     }
     let Some(instance_lock) = lock else {
         // Opened again while running (often because the menu-bar icon is hidden): say so.
-        platform::alert(platform::ALREADY_RUNNING);
+        let cfg = Config::load();
+        platform::alert(&platform::already_running(cfg.talk_key.usable(), cfg.talk_mode == TalkMode::Toggle));
         return Ok(());
     };
     #[allow(unused_mut)]
@@ -366,7 +370,8 @@ pub fn run() -> Result<()> {
         let animating = app.overlay.tick();
         match event {
             Event::NewEvents(StartCause::Init) => {
-                ui = Some(build_ui());
+                app.apply_talk_key();
+                ui = Some(build_ui(app.talk_hint()));
                 let p = proxy.clone();
                 platform::spawn_hotkey_listener(Box::new(move |e| {
                     let _ = p.send_event(UserEvent::Hotkey(e, Instant::now()));
@@ -474,7 +479,7 @@ pub fn run() -> Result<()> {
     })
 }
 
-fn build_ui() -> Ui {
+fn build_ui(hint: String) -> Ui {
     let status = MenuItem::new("Loading…", false, None);
     let permission = MenuItem::new("⚠ Open Accessibility settings…", true, None);
     let paste_last = MenuItem::new("Paste last transcript", false, None);
@@ -482,7 +487,7 @@ fn build_ui() -> Ui {
     let add_correction = MenuItem::new("Add correction…", true, None);
     let settings = MenuItem::new("Settings…", true, None);
     let download = MenuItem::new("Download model (1 GB)", true, None);
-    let hint = MenuItem::new(format!("Hold {TALK_KEY_LABEL} to talk · tap = hands-free · Esc = cancel"), false, None);
+    let hint = MenuItem::new(hint, false, None);
     let quit = MenuItem::new("Quit PoodPim", true, None);
     let menu = Menu::new();
     let seps: Vec<PredefinedMenuItem> = (0..3).map(|_| PredefinedMenuItem::separator()).collect();
@@ -509,6 +514,7 @@ fn build_ui() -> Ui {
         add_correction,
         settings,
         download,
+        hint,
         quit,
         shown_permission: Default::default(),
         shown_download: Default::default(),
@@ -524,6 +530,29 @@ impl App {
 
     fn busy(&self) -> bool {
         matches!(self.state, State::Recording | State::Transcribing | State::Downloading)
+    }
+
+    /// The talk key in use (Windows: always Right Alt).
+    fn talk_key(&self) -> Binding {
+        self.cfg.talk_key.usable()
+    }
+
+    /// The tray menu's line on how to use the talk key.
+    fn talk_hint(&self) -> String {
+        let key = self.talk_key().label();
+        match self.cfg.talk_mode {
+            TalkMode::HoldOrTap => format!("Hold {key} to talk · tap = hands-free · Esc = cancel"),
+            TalkMode::Hold => format!("Hold {key} to talk · Esc = cancel"),
+            TalkMode::Toggle => format!("Tap {key} to start, tap again to finish · Esc = cancel"),
+        }
+    }
+
+    /// Gives the keyboard tap and the pill the talk key and press mode from the config.
+    fn apply_talk_key(&mut self) {
+        let key = self.talk_key();
+        hotkey::lock().set_binding(key);
+        self.overlay.set_talk_key(key.label(), self.cfg.talk_mode == TalkMode::Toggle);
+        eprintln!("talk key: {} ({:?})", key.label(), self.cfg.talk_mode);
     }
 
     fn ready_text(&self) -> String {
@@ -543,12 +572,12 @@ impl App {
                 self.waking = None;
                 if self.cfg.server().url.is_empty() {
                     self.state = State::NeedsServer;
-                    self.status_text = format!("Enter the API URL && key: press {TALK_KEY_LABEL}");
+                    self.status_text = format!("Enter the API URL && key: press {}", self.talk_key().label());
                     return;
                 }
                 if self.cfg.server().api_key.is_empty() {
                     self.state = State::NeedsServer;
-                    self.status_text = format!("Enter the API key: press {TALK_KEY_LABEL}");
+                    self.status_text = format!("Enter the API key: press {}", self.talk_key().label());
                     return;
                 }
                 self.state = State::Idle;
@@ -756,7 +785,7 @@ impl App {
                         self.key_rejected = e.contains("401");
                         if !self.busy() {
                             self.status_text = if self.key_rejected {
-                                format!("API key was rejected: press {TALK_KEY_LABEL} to enter it")
+                                format!("API key was rejected: press {} to enter it", self.talk_key().label())
                             } else {
                                 format!("Server error: {}", e.chars().take(70).collect::<String>())
                             };
@@ -1206,6 +1235,9 @@ impl App {
                             eprintln!("listening");
                             self.overlay.set(Phase::Listening { handsfree: false });
                             self.start_pipeline();
+                            if self.cfg.talk_mode == TalkMode::Toggle {
+                                self.go_handsfree();
+                            }
                         }
                         Err(e) => {
                             eprintln!("microphone: {e:#}");
@@ -1219,15 +1251,8 @@ impl App {
                 if self.state == State::Recording && !self.handsfree {
                     let held = at.saturating_duration_since(self.pressed_at);
                     eprintln!("talk key held {} ms", held.as_millis());
-                    if held < TAP {
-                        self.handsfree = true;
-                        if self.cfg.live_typing
-                            && let Some(seg) = self.segmenter.as_mut()
-                        {
-                            seg.set_live(); // shorter parts, so text appears sooner
-                        }
-                        self.status_text = format!("Listening… (tap {TALK_KEY_LABEL} to finish)");
-                        self.overlay.set(Phase::Listening { handsfree: true });
+                    if held < TAP && self.cfg.talk_mode == TalkMode::HoldOrTap {
+                        self.go_handsfree();
                     } else {
                         self.stop_at = Some(at + TAIL);
                     }
@@ -1254,10 +1279,22 @@ impl App {
                 self.needs_permission = true;
             }
             HotkeyEvent::Ready => {
-                eprintln!("watching the {TALK_KEY_LABEL} key");
+                eprintln!("watching the {} key", self.talk_key().label());
                 self.needs_permission = false;
             }
         }
+    }
+
+    /// Keeps recording after the key is let go, until the next press (a tap, or "tap to start").
+    fn go_handsfree(&mut self) {
+        self.handsfree = true;
+        if self.cfg.live_typing
+            && let Some(seg) = self.segmenter.as_mut()
+        {
+            seg.set_live(); // shorter parts, so text appears sooner
+        }
+        self.status_text = format!("Listening… (tap {} to finish)", self.talk_key().label());
+        self.overlay.set(Phase::Listening { handsfree: true });
     }
 
     /// Sets up the segmenter and the background transcription worker for a new recording.
@@ -1459,7 +1496,7 @@ impl App {
         }
         let (done, sent) = pipe.progress();
         if sent > 0 {
-            let hint = if self.handsfree { format!(" · tap {TALK_KEY_LABEL} to finish") } else { String::new() };
+            let hint = if self.handsfree { format!(" · tap {} to finish", self.talk_key().label()) } else { String::new() };
             self.status_text = format!("Listening… {done}/{sent} parts transcribed{hint}");
         }
         self.show_heard(); // a part may have finished since (unchanged text costs nothing)
@@ -1596,7 +1633,10 @@ impl App {
             "autostart": self.cfg.start_at_login,
             "vocabCount": self.vocab_count,
             "correctionsCount": self.corrections_count,
-            "talkKey": TALK_KEY_LABEL,
+            "talkKey": self.talk_key().label(),
+            "talkKeyId": match self.talk_key() { Binding::Modifier { key } => key },
+            "talkMode": self.cfg.talk_mode,
+            "chooseKey": cfg!(target_os = "macos"),
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
             "needsPermission": self.needs_permission,
             "updates": update::supported(),
@@ -1651,6 +1691,18 @@ impl App {
                 if v["key"] == "autostart" {
                     self.apply_autostart();
                 }
+            }
+            "talk_key" => {
+                let Ok(key) = serde_json::from_value(v["value"].clone()) else { return };
+                self.cfg.talk_key = Binding::Modifier { key };
+                self.cfg.save();
+                self.apply_talk_key();
+            }
+            "talk_mode" => {
+                let Ok(mode) = serde_json::from_value(v["value"].clone()) else { return };
+                self.cfg.talk_mode = mode;
+                self.cfg.save();
+                self.apply_talk_key();
             }
             "backend" => {
                 let backend = if text("value") == "lambda" { Backend::Lambda } else { Backend::Local };
@@ -1747,6 +1799,7 @@ impl App {
         } else {
             ui.status.set_text(&self.status_text);
         }
+        ui.hint.set_text(self.talk_hint());
         let need_download = self.cfg.backend == Backend::Local
             && matches!(self.state, State::NeedsModel | State::Error)
             && !model::is_ready(&model::model_dir());
