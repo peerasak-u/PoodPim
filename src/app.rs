@@ -9,7 +9,7 @@
 //! and finished segments are transcribed in the background (see `pipeline`), so letting go
 //! of the key only waits for the last segment, and no request gets too large.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -1468,7 +1468,7 @@ impl App {
                 let vocabulary = self.vocabulary.clone();
                 Pipeline::start(
                     move |a: &[f32]| match waking.wait() {
-                        Ok(asr) => asr.lock().unwrap().transcribe(a, mixed, &vocabulary),
+                        Ok(asr) => asr.lock().unwrap_or_else(PoisonError::into_inner).transcribe(a, mixed, &vocabulary),
                         Err(e) => Err(anyhow::anyhow!("loading the model: {e}")),
                     },
                     None,
@@ -1478,7 +1478,13 @@ impl App {
             Backend::Local => {
                 let asr = self.asr.clone().expect("model loaded in Idle state");
                 let vocabulary = self.vocabulary.clone();
-                Pipeline::start(move |a: &[f32]| asr.lock().unwrap().transcribe(a, mixed, &vocabulary), None, on_part)
+                // (A segment that panicked mid-transcription leaves the lock poisoned; the model
+                // itself is fine, so later segments carry on.)
+                Pipeline::start(
+                    move |a: &[f32]| asr.lock().unwrap_or_else(PoisonError::into_inner).transcribe(a, mixed, &vocabulary),
+                    None,
+                    on_part,
+                )
             }
             Backend::Lambda => {
                 let stale = self.last_server_ok.is_none_or(|t| t.elapsed() > ASSUME_WARM);
@@ -1576,10 +1582,14 @@ impl App {
         std::thread::spawn(move || {
             let audio = resample(&raw, rate, SAMPLE_RATE);
             // A finished part may have just been queued: it goes first.
-            let text = match asr.try_lock() {
-                Ok(mut asr) => asr.transcribe(&audio, mixed, &vocabulary).ok(),
-                Err(_) => None,
+            let guard = match asr.try_lock() {
+                Ok(g) => Some(g),
+                Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => None,
             };
+            let text = guard.and_then(|mut asr| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| asr.transcribe(&audio, mixed, &vocabulary))).ok()?.ok()
+            });
             busy.store(false, Ordering::SeqCst);
             if let Some(text) = text {
                 let _ = p.send_event(UserEvent::Preview(generation, part, text, clipped));

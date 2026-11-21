@@ -76,8 +76,13 @@ impl Pipeline {
                 let secs = audio.len() as f32 / SAMPLE_RATE as f32;
                 if secs >= MIN_SEGMENT_S {
                     let t0 = Instant::now();
+                    // A panic (a bug on some input) fails this segment, not the rest of the recording.
+                    let mut attempt = || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| transcribe(audio)))
+                            .unwrap_or_else(|_| Err(anyhow::anyhow!("transcription panicked")))
+                    };
                     // One retry: a transient network error shouldn't lose a sentence.
-                    let r = transcribe(audio).or_else(|_| transcribe(audio));
+                    let r = attempt().or_else(|_| attempt());
                     match r {
                         Ok(t) => {
                             // The text only on a terminal: the app's log file must not collect dictation.
@@ -125,5 +130,29 @@ impl Pipeline {
     pub fn cancel(mut self) {
         self.cancelled.store(true, Ordering::SeqCst);
         self.tx = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tone(secs: f32) -> Vec<f32> {
+        (0..(secs * SAMPLE_RATE as f32) as usize).map(|i| 0.3 * (i as f32 * 0.07).sin()).collect()
+    }
+
+    #[test]
+    fn a_panicking_segment_fails_alone() {
+        let mut p = Pipeline::start(
+            |a: &[f32]| if a.len() == SAMPLE_RATE as usize { panic!("bad input") } else { Ok(format!("{}", a.len())) },
+            None,
+            |_| {},
+        );
+        p.push(tone(1.0));
+        p.push(tone(0.5));
+        let out = p.finish().join().expect("the worker survives");
+        assert_eq!(out.parts, vec![(SAMPLE_RATE / 2).to_string()]);
+        assert_eq!(out.errors.len(), 1);
+        assert_eq!(out.segments, 2);
     }
 }

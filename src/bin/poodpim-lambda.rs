@@ -133,7 +133,8 @@ async fn handler(req: Request) -> Result<Response<Body>, Error> {
             };
             let vocabulary = vocabulary(req.headers().get("x-poodpim-vocabulary").and_then(|v| v.to_str().ok()).unwrap_or(""));
             let t0 = Instant::now();
-            let result = asr.lock().unwrap().transcribe(audio, mixed, &vocabulary);
+            // A request that panicked mid-transcription poisons the lock; the model is fine.
+            let result = asr.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transcribe(audio, mixed, &vocabulary);
             match result {
                 Ok(text) => json(
                     200,
