@@ -111,6 +111,8 @@ enum State {
     Error,
 }
 
+mod mic;
+
 struct Ui {
     tray: TrayIcon,
     menu: Menu,
@@ -140,6 +142,8 @@ struct App {
     last_used: Instant,
     load_gen: u64,
     recorder: Recorder,
+    /// Input device names for Settings, listed when it asks (None = not listed yet).
+    mics: Option<Vec<String>>,
     pressed_at: Instant,
     /// The talk key was let go: finish the recording at this time (see TAIL).
     stop_at: Option<Instant>,
@@ -297,6 +301,7 @@ pub fn run() -> Result<()> {
         last_used: Instant::now(),
         load_gen: 0,
         recorder: Recorder::new(),
+        mics: None,
         pressed_at: Instant::now(),
         stop_at: None,
         handsfree: false,
@@ -379,7 +384,7 @@ pub fn run() -> Result<()> {
                 app.apply_autostart();
                 // For testing the Settings window without the tray menu.
                 app.want_settings = std::env::var_os("POODPIM_OPEN_SETTINGS").is_some();
-                Recorder::warm_up();
+                Recorder::warm_up(app.cfg.microphone.clone());
                 app.start_backend();
                 // First launch in Local mode: ask about the model now, not on the first key press.
                 if app.state == State::NeedsModel {
@@ -1196,13 +1201,13 @@ impl App {
                     self.finish();
                 } else if self.state == State::Idle {
                     let started = Instant::now();
-                    match self.recorder.start() {
+                    match self.recorder.start(self.cfg.microphone.as_deref()) {
                         Ok(()) => {
                             // From the key press, not from now: opening the microphone can take
                             // a second or more (Windows, Bluetooth headsets), and timing from here
                             // turned short holds into taps (hands-free mode).
                             self.pressed_at = at;
-                            eprintln!("microphone started in {} ms", started.elapsed().as_millis());
+                            eprintln!("microphone {:?} started in {} ms", self.recorder.device_name(), started.elapsed().as_millis());
                             self.state = State::Recording;
                             self.status_text = "Listening…".into();
                             eprintln!("listening");
@@ -1577,6 +1582,7 @@ impl App {
             "version": update::CURRENT,
             "status": if self.needs_permission { "ต้องให้สิทธิ์ Accessibility ก่อน" } else { self.status_text.as_str() },
             "backend": if self.cfg.backend == Backend::Lambda { "lambda" } else { "local" },
+            "mic": self.mic_state(),
             "serverUrl": self.cfg.server_url,
             "hasKey": !self.cfg.api_key.is_empty(),
             "mixed": self.cfg.mixed_english,
@@ -1673,6 +1679,7 @@ impl App {
                 }
                 self.settings_toast("บันทึกแล้ว");
             }
+            "mic" => self.mic_message(&v),
             "open" => match text("what").as_str() {
                 "vocabulary" => {
                     self.reload_vocabulary();
