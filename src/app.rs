@@ -98,6 +98,10 @@ enum UserEvent {
     ModelUpgradeAnswer(bool),
     ModelUpgradeProgress(u64, u64),
     ModelUpgradeDone(Result<(), String>),
+    /// The language model's clean-up of the text to paste: (generation, original, reply).
+    Polished(u64, String, Result<String, String>),
+    /// Settings › ทดสอบ: how long the sample took, or why it failed.
+    PolishTested(Result<u128, String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -131,6 +135,8 @@ struct Ui {
     shown_permission: std::cell::Cell<bool>,
     shown_download: std::cell::Cell<bool>,
 }
+
+mod post;
 
 struct App {
     cfg: Config,
@@ -227,6 +233,8 @@ struct App {
     remove_fp32_after_load: bool,
     /// Fetching the int8 decoder was started this session (tried again at the next launch).
     decoder_int8_started: bool,
+    /// The text to paste is with the language model (see post.rs); Esc drops it.
+    polishing: bool,
 }
 
 /// Locks a file in the settings folder; None if another copy of the app holds it.
@@ -358,6 +366,7 @@ pub fn run() -> Result<()> {
         model_swap_pending: false,
         remove_fp32_after_load: false,
         decoder_int8_started: false,
+        polishing: false,
     };
     app.reload_vocabulary();
     let mut ui: Option<Ui> = None;
@@ -905,32 +914,30 @@ impl App {
                 let typed = std::mem::take(&mut self.typed);
                 let typer = self.typer.take();
                 let rest = crate::pipeline::join_parts(out.parts.get(typed.len()..).unwrap_or_default());
-                let rest = if rest.is_empty() { rest } else { corrections::finish(&rest, &self.corrections, self.cfg.numbers_as_digits) };
+                let rest = if rest.is_empty() { rest } else { self.tidy(&rest) };
                 let text = crate::pipeline::join_parts(&typed.iter().chain([&rest]).collect::<Vec<_>>());
                 if !text.is_empty() {
                     eprintln!("{:.1}s in {} segment(s), {} typed live: {}", out.audio_s, out.segments, typed.len(), said(&text));
-                    self.last_text = text.clone();
-                    self.recent.push_front(text.clone());
-                    self.recent.truncate(RECENT);
-                    self.recent_dirty = true;
-                    let phase = match typer {
-                        Some(_) if rest.is_empty() => Phase::Done,
-                        Some((typer, window)) if platform::focused_window() == window && !platform::foreground_is_elevated() => {
-                            typer.type_text(continuation(&typed, &rest));
-                            Phase::Done
-                        }
-                        Some((typer, _)) => {
-                            eprintln!("the focused window changed while typing: copied the rest");
-                            typer.finish();
-                            match inserter::copy_text(&rest) {
-                                Ok(()) => Phase::Copied,
-                                Err(e) => {
-                                    eprintln!("copy error: {e:#}");
-                                    Phase::Failed
-                                }
+                    let Some((typer, window)) = typer else {
+                        self.polish_or_deliver(text);
+                        return;
+                    };
+                    self.remember(&text);
+                    let phase = if rest.is_empty() {
+                        Phase::Done
+                    } else if platform::focused_window() == window && !platform::foreground_is_elevated() {
+                        typer.type_text(continuation(&typed, &rest));
+                        Phase::Done
+                    } else {
+                        eprintln!("the focused window changed while typing: copied the rest");
+                        typer.finish();
+                        match inserter::copy_text(&rest) {
+                            Ok(()) => Phase::Copied,
+                            Err(e) => {
+                                eprintln!("copy error: {e:#}");
+                                Phase::Failed
                             }
                         }
-                        None => self.paste(rest),
                     };
                     self.overlay.set(phase);
                 } else if !out.errors.is_empty() {
@@ -1062,7 +1069,7 @@ impl App {
             UserEvent::Part(generation, text) => self.type_part(generation, text),
             UserEvent::Preview(generation, part, text, clipped) => {
                 if generation == self.rec_gen && self.state == State::Recording {
-                    self.preview = (part, corrections::finish(&text, &self.corrections, self.cfg.numbers_as_digits), clipped);
+                    self.preview = (part, self.tidy(&text), clipped);
                     self.show_heard();
                 }
             }
@@ -1075,6 +1082,8 @@ impl App {
             },
             UserEvent::Menu(_) => {}
             UserEvent::Settings(msg) => self.settings_message(&msg),
+            UserEvent::Polished(generation, original, r) => self.on_polished(generation, original, r),
+            UserEvent::PolishTested(r) => self.on_polish_tested(r),
         }
     }
 
@@ -1326,6 +1335,9 @@ impl App {
                 }
             }
             HotkeyEvent::Escape => {
+                if self.polishing {
+                    self.cancel_polish();
+                }
                 if self.state == State::Recording {
                     self.drop_recording();
                     self.status_text = "Cancelled".into();
@@ -1442,7 +1454,7 @@ impl App {
         if generation != self.rec_gen {
             return; // cancelled recording
         }
-        let text = corrections::finish(&text, &self.corrections, self.cfg.numbers_as_digits);
+        let text = self.tidy(&text);
         self.heard.push(text.clone());
         self.show_heard();
         let live = self.cfg.live_typing && self.handsfree && self.state == State::Recording;
@@ -1731,6 +1743,7 @@ impl App {
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
             "needsPermission": self.needs_permission,
             "updates": update::supported(),
+            "post": self.post_state(),
         })
         .to_string()
     }
@@ -1866,6 +1879,7 @@ impl App {
             "download" => self.start_download(),
             "update" => self.check_update(),
             "uninstall" => self.ask_uninstall(),
+            "post" => self.post_message(&v),
             _ => {}
         }
     }

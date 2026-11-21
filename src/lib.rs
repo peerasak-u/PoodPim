@@ -7,6 +7,7 @@ pub mod asr;
 pub mod corrections;
 pub mod audio;
 pub mod features;
+pub mod fillers;
 pub mod hotwords;
 pub mod model;
 pub mod numbers;
@@ -31,3 +32,5 @@ pub mod remote;
 pub mod settings;
 #[cfg(feature = "desktop")]
 pub mod update;
+#[cfg(feature = "desktop")]
+pub mod polish;
