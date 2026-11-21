@@ -130,6 +130,28 @@
   </div>
 </div>
 
+<h2>ปุ่มพูด</h2>
+<div class="card">
+  <div class="row" id="talk-key-row">
+    <div class="text"><div class="label">ปุ่มที่ใช้พูด</div>
+      <div class="hint" id="talk-key-hint"></div></div>
+    <div class="seg" role="group" aria-label="ปุ่มที่ใช้พูด">
+      <button data-talk-key="right_option">⌥ ขวา</button>
+      <button data-talk-key="right_control">⌃ ขวา</button>
+      <button data-talk-key="fn">fn 🌐</button>
+    </div>
+  </div>
+  <div class="row">
+    <div class="text"><div class="label">วิธีกด</div>
+      <div class="hint" id="talk-mode-hint"></div></div>
+    <div class="seg" role="group" aria-label="วิธีกด">
+      <button data-talk-mode="hold_or_tap">ค้างหรือแตะ</button>
+      <button data-talk-mode="hold">กดค้าง</button>
+      <button data-talk-mode="toggle">แตะเริ่ม/จบ</button>
+    </div>
+  </div>
+</div>
+
 <h2>ข้อความ</h2>
 <div class="card">
   <div class="row">
@@ -211,7 +233,7 @@
   </div>
 </div>
 
-<footer>กด <span class="talkkey"></span> ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · Esc = ยกเลิก</footer>
+<footer id="footer"></footer>
 <div id="toast" role="status"></div>
 
 <script>
@@ -226,6 +248,24 @@
     const b = document.createElement("b"); b.textContent = s.status; $("status").append(b);
     document.querySelectorAll(".talkkey").forEach((e) => (e.textContent = s.talkKey));
     $("permission").classList.toggle("hidden", !s.needsPermission);
+    $("talk-key-row").classList.toggle("hidden", !s.chooseKey);
+    document.querySelectorAll("[data-talk-key]").forEach((btn) =>
+      btn.setAttribute("aria-pressed", String(btn.dataset.talkKey === s.talkKeyId)));
+    $("talk-key-hint").textContent = s.talkKeyId === "fn"
+      ? "ตั้ง System Settings › Keyboard › \"Press 🌐 key to\" เป็น Do Nothing และถ้าใช้ Dictation ของ Apple อย่าตั้งปุ่มลัดเป็นกด 🌐 สองครั้ง"
+      : "ปุ่มฝั่งขวาเท่านั้น ปุ่มฝั่งซ้ายยังใช้กับปุ่มลัดได้ตามปกติ";
+    document.querySelectorAll("[data-talk-mode]").forEach((btn) =>
+      btn.setAttribute("aria-pressed", String(btn.dataset.talkMode === s.talkMode)));
+    $("talk-mode-hint").textContent = {
+      hold_or_tap: "กดค้าง = พูดแล้วปล่อย · แตะครั้งเดียว = พูดยาว แล้วแตะอีกครั้งเมื่อจบ",
+      hold: "กดค้างไว้ระหว่างพูด ปล่อยแล้วพิมพ์ให้",
+      toggle: "แตะครั้งแรกเริ่มฟัง แตะอีกครั้งเมื่อจบ",
+    }[s.talkMode];
+    $("footer").textContent = {
+      hold_or_tap: `กด ${s.talkKey} ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · Esc = ยกเลิก`,
+      hold: `กด ${s.talkKey} ค้างไว้เพื่อพูด · Esc = ยกเลิก`,
+      toggle: `แตะ ${s.talkKey} เพื่อเริ่มพูด แตะอีกครั้งเมื่อจบ · Esc = ยกเลิก`,
+    }[s.talkMode];
     document.querySelectorAll("[data-backend]").forEach((btn) =>
       btn.setAttribute("aria-pressed", String(btn.dataset.backend === s.backend)));
     $("backend-hint").textContent = s.backend === "local"
@@ -260,6 +300,10 @@
     i.addEventListener("change", () => send({ cmd: "set", key: i.dataset.set, value: i.checked })));
   document.querySelectorAll("[data-backend]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "backend", value: btn.dataset.backend })));
+  document.querySelectorAll("[data-talk-key]").forEach((btn) =>
+    btn.addEventListener("click", () => send({ cmd: "talk_key", value: btn.dataset.talkKey })));
+  document.querySelectorAll("[data-talk-mode]").forEach((btn) =>
+    btn.addEventListener("click", () => send({ cmd: "talk_mode", value: btn.dataset.talkMode })));
   document.querySelectorAll("[data-open]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "open", what: btn.dataset.open })));
   $("unload").addEventListener("change", (e) =>
