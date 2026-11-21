@@ -94,6 +94,11 @@ impl App {
     }
 
     fn start_capture(&mut self) {
+        // Without Accessibility there is no keyboard tap, so the key pressed would never arrive.
+        if self.needs_permission {
+            self.settings_toast("ต้องให้สิทธิ์ Accessibility ก่อน ถึงจะตั้งปุ่มเองได้");
+            return;
+        }
         if self.busy() {
             self.settings_toast("รอให้ถอดเสียงเสร็จก่อน");
             return;
