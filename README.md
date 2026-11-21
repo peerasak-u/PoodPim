@@ -68,7 +68,7 @@ on Windows also Settings › Apps › PoodPim.
 |---|---|---|
 | Talk | hold **Right ⌥** | hold **Right Alt** |
 | Hands-free, typed as you speak | tap Right ⌥, tap again to finish | tap Right Alt, tap again |
-| Change the talk key | Settings › ปุ่มพูด: Right ⌥ (default), Right ⌃ or fn 🌐 | always Right Alt |
+| Change the talk key | Settings › ปุ่มพูด: Right ⌥ (default), Right ⌃, fn 🌐, or record a key such as ⌃⌥Space or F5 | always Right Alt |
 | Press mode | Settings › ปุ่มพูด: hold or tap (default), hold only, tap to start / stop | same |
 | Cancel | Esc | Esc |
 | Paste | ⌘V (clipboard restored after) | Ctrl+V (clipboard restored after) |
@@ -97,7 +97,15 @@ Settings › Keyboard › "Press 🌐 key to" to Do Nothing, and don't give Appl
 (as above), hold only (a short press is a short recording, never hands-free), or tap to start
 and tap again to finish.
 
-On macOS the talk key still reaches other apps, so it is also used in key combinations (⌥E
+A recorded key ("ตั้งปุ่มเอง…", then press it; Esc or 15 s cancels) is a key with ⌃, ⌥ or ⌘
+(⇧ alone doesn't count), or an F-key on its own. Shortcuts that macOS or every app already
+uses are refused: ⌘Tab, ⌘Space, ⌃Space, ⌃⌘Space, ⌃⌘Q and ⌘ with a letter. Unlike a modifier,
+the recorded key is kept from other apps, so the keyboard tap becomes an active one (it sits
+in the path of every keystroke) while such a key is set or being recorded; with a modifier
+it stays listen-only. In a password field macOS hides keys from every app (Secure Input),
+so there the recorded key isn't seen and types into the field instead.
+
+On macOS a talk modifier still reaches other apps, so it is also used in key combinations (⌥E
 for an accent, ⌥← to jump a word). If another key goes down within 0.5 s of pressing the talk
 key, the recording that press started is dropped instead of turning into a hands-free one.
 Keys pressed later in a long hold don't count. (Windows takes Right Alt for itself, so there

@@ -140,6 +140,11 @@
       <button data-talk-key="fn">fn 🌐</button>
     </div>
   </div>
+  <div class="row" id="talk-capture-row">
+    <div class="text"><div class="label">ปุ่มอื่น หรือปุ่มลัด</div>
+      <div class="hint">เช่น ⌥Space, ⌃⌥Space หรือ F5 · แอปอื่นจะไม่เห็นปุ่มนี้ (ยกเว้นในช่องรหัสผ่าน)</div></div>
+    <button class="btn" id="talk-capture"></button>
+  </div>
   <div class="row">
     <div class="text"><div class="label">วิธีกด</div>
       <div class="hint" id="talk-mode-hint"></div></div>
@@ -239,9 +244,13 @@
     document.querySelectorAll(".talkkey").forEach((e) => (e.textContent = s.talkKey));
     $("permission").classList.toggle("hidden", !s.needsPermission);
     $("talk-key-row").classList.toggle("hidden", !s.chooseKey);
+    $("talk-capture-row").classList.toggle("hidden", !s.chooseKey);
+    $("talk-capture").textContent = s.talkCapturing ? "กดปุ่มที่ต้องการ… (Esc = ยกเลิก)"
+      : s.talkKeyId ? "ตั้งปุ่มเอง…" : `${s.talkKey} · เปลี่ยน…`;
     document.querySelectorAll("[data-talk-key]").forEach((btn) =>
       btn.setAttribute("aria-pressed", String(btn.dataset.talkKey === s.talkKeyId)));
-    $("talk-key-hint").textContent = s.talkKeyId === "fn"
+    $("talk-key-hint").textContent = !s.talkKeyId ? `ตอนนี้: ${s.talkKey}`
+      : s.talkKeyId === "fn"
       ? "ตั้ง System Settings › Keyboard › \"Press 🌐 key to\" เป็น Do Nothing และถ้าใช้ Dictation ของ Apple อย่าตั้งปุ่มลัดเป็นกด 🌐 สองครั้ง"
       : "ปุ่มฝั่งขวาเท่านั้น ปุ่มฝั่งซ้ายยังใช้กับปุ่มลัดได้ตามปกติ";
     document.querySelectorAll("[data-talk-mode]").forEach((btn) =>
@@ -286,6 +295,7 @@
     btn.addEventListener("click", () => send({ cmd: "talk_key", value: btn.dataset.talkKey })));
   document.querySelectorAll("[data-talk-mode]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "talk_mode", value: btn.dataset.talkMode })));
+  $("talk-capture").addEventListener("click", () => send({ cmd: "talk_capture", value: !state.talkCapturing }));
   document.querySelectorAll("[data-open]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "open", what: btn.dataset.open })));
   $("download").addEventListener("click", () => send({ cmd: "download" }));
@@ -309,6 +319,7 @@
   add.addEventListener("click", addCorrection);
   wanted.addEventListener("keydown", (e) => { if (e.key === "Enter") addCorrection(); });
   document.addEventListener("keydown", (e) => {
+    if (state && state.talkCapturing) { e.preventDefault(); return; } // the key being recorded
     if (e.key === "Escape" || ((e.metaKey || e.ctrlKey) && e.key === "w")) send({ cmd: "close" });
   });
   send({ cmd: "ready" });
