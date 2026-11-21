@@ -520,19 +520,35 @@ pub fn run() -> Result<()> {
     })
 }
 
+/// A tray menu entry with a fixed title, and the SF Symbol shown before it on macOS
+/// (`menu_symbols` finds the entry by this title).
+type Entry = (&'static str, &'static str);
+const PERMISSION: Entry = ("Open Accessibility settings…", "exclamationmark.triangle");
+const PASTE_LAST: Entry = ("Paste last transcript", "doc.on.clipboard");
+const RECENT_MENU: Entry = ("Recent", "clock.arrow.circlepath");
+const ADD_CORRECTION: Entry = ("Add correction…", "character.cursor.ibeam");
+const SETTINGS: Entry = ("Settings…", "gearshape");
+const DOWNLOAD: Entry = ("Download model (1 GB)", "arrow.down.circle");
+const QUIT: Entry = ("Quit PoodPim", "power");
+#[cfg(target_os = "macos")]
+const ENTRIES: [Entry; 7] = [PERMISSION, PASTE_LAST, RECENT_MENU, ADD_CORRECTION, SETTINGS, DOWNLOAD, QUIT];
+/// The status line's symbol (its title changes).
+#[cfg(target_os = "macos")]
+const STATUS_SYMBOL: &str = "waveform";
+
 fn build_ui() -> Ui {
     let status = MenuItem::new("Loading…", false, None);
     let permission = MenuItem::new(
-        if cfg!(target_os = "macos") { "Open Accessibility settings…" } else { "⚠ Open Accessibility settings…" },
+        if cfg!(target_os = "macos") { PERMISSION.0.to_string() } else { format!("⚠ {}", PERMISSION.0) },
         true,
         None,
     );
-    let paste_last = MenuItem::new("Paste last transcript", false, None);
-    let recent = Submenu::new("Recent", false);
-    let add_correction = MenuItem::new("Add correction…", true, None);
-    let settings = MenuItem::new("Settings…", true, None);
-    let download = MenuItem::new("Download model (1 GB)", true, None);
-    let quit = MenuItem::new("Quit PoodPim", true, None);
+    let paste_last = MenuItem::new(PASTE_LAST.0, false, None);
+    let recent = Submenu::new(RECENT_MENU.0, false);
+    let add_correction = MenuItem::new(ADD_CORRECTION.0, true, None);
+    let settings = MenuItem::new(SETTINGS.0, true, None);
+    let download = MenuItem::new(DOWNLOAD.0, true, None);
+    let quit = MenuItem::new(QUIT.0, true, None);
     let menu = Menu::new();
     let seps: Vec<PredefinedMenuItem> = (0..3).map(|_| PredefinedMenuItem::separator()).collect();
     // The permission and download items go in only while needed (see refresh).
@@ -1989,16 +2005,17 @@ impl App {
         let need_download = self.cfg.backend == Backend::Local
             && matches!(self.state, State::NeedsModel | State::Error)
             && !model::is_ready(&model::model_dir());
-        // Menu: status, [permission], separator, Paste last, Recent, Add correction, separator,
-        // Settings, [download], …
+        // The permission entry goes right under the status line, the download one under Settings.
+        let after = |id: &MenuId| ui.menu.items().iter().position(|i| i.id() == id).map_or(0, |p| p + 1);
         if self.needs_permission != ui.shown_permission.get() {
             ui.shown_permission.set(self.needs_permission);
-            let _ = if self.needs_permission { ui.menu.insert(&ui.permission, 1) } else { ui.menu.remove(&ui.permission) };
+            let at = after(ui.status.id());
+            let _ = if self.needs_permission { ui.menu.insert(&ui.permission, at) } else { ui.menu.remove(&ui.permission) };
             menu_symbols(&ui.menu);
         }
         if need_download != ui.shown_download.get() {
             ui.shown_download.set(need_download);
-            let at = 7 + usize::from(ui.shown_permission.get());
+            let at = after(ui.settings.id());
             let _ = if need_download { ui.menu.insert(&ui.download, at) } else { ui.menu.remove(&ui.download) };
             menu_symbols(&ui.menu);
         }
@@ -2025,15 +2042,6 @@ fn menu_symbols(menu: &Menu) {
     use objc2_app_kit::{NSImage, NSMenu};
     use objc2_foundation::NSString;
     use tray_icon::menu::ContextMenu;
-    const BY_TITLE: [(&str, &str); 7] = [
-        ("Open Accessibility settings…", "exclamationmark.triangle"),
-        ("Paste last transcript", "doc.on.clipboard"),
-        ("Recent", "clock.arrow.circlepath"),
-        ("Add correction…", "character.cursor.ibeam"),
-        ("Settings…", "gearshape"),
-        ("Download model (1 GB)", "arrow.down.circle"),
-        ("Quit PoodPim", "power"),
-    ];
     // SAFETY: muda's NSMenu for this menu, alive as long as `menu`.
     let Some(ns) = (unsafe { menu.ns_menu().cast::<NSMenu>().as_ref() }) else { return };
     let symbol = |name: &str| NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None);
@@ -2042,7 +2050,7 @@ fn menu_symbols(menu: &Menu) {
             continue;
         }
         let title = item.title().to_string();
-        let name = if i == 0 { Some("waveform") } else { BY_TITLE.iter().find(|(t, _)| *t == title).map(|(_, n)| *n) };
+        let name = if i == 0 { Some(STATUS_SYMBOL) } else { ENTRIES.iter().find(|(t, _)| *t == title).map(|(_, n)| *n) };
         if let Some(image) = name.and_then(symbol) {
             item.setImage(Some(&image));
         }
