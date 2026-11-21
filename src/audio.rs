@@ -230,7 +230,7 @@ where
 }
 }
 
-/// Windowed-sinc resampler (Hann window, 16 zero-crossings). Offline; fast enough for dictation clips.
+/// Windowed-sinc resampler (Hann window, 16 zero-crossings).
 pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to || input.is_empty() {
         return input.to_vec();
@@ -238,25 +238,51 @@ pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     let ratio = to as f64 / from as f64;
     let cutoff = ratio.min(1.0) * 0.95;
     let half = (16.0 / cutoff).ceil() as isize;
+    let taps = 2 * half as usize;
+    let weight = |d: f64| {
+        let x = cutoff * d;
+        let sinc = if x.abs() < 1e-9 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
+        let w = 0.5 + 0.5 * (std::f64::consts::PI * d / half as f64).cos();
+        cutoff * sinc * w
+    };
+    // Output sample n sits at input position n·from/to: a whole part and a fraction phase/period.
+    // The fraction repeats every `period` samples, so each phase's tap weights are worked out
+    // once. (A sin and a cos per tap per sample took 0.5 s for a 25 s part at 48 kHz, on the
+    // event loop.) An odd rate with too many phases for a table computes them as it goes.
+    let g = gcd(from, to) as u64;
+    let (step, period) = (from as u64 / g, to as u64 / g);
+    let weights_at = |phase: u64| {
+        let frac = phase as f64 / period as f64;
+        (0..taps).map(move |j| weight(frac + (half - 1 - j as isize) as f64))
+    };
+    let table: Option<Vec<f64>> = (period as usize * taps <= 1 << 20).then(|| (0..period).flat_map(weights_at).collect());
+    let mut row = vec![0.0f64; taps];
     let out_len = (input.len() as f64 * ratio).floor() as usize;
     let mut out = Vec::with_capacity(out_len);
-    for n in 0..out_len {
-        let t = n as f64 / ratio;
-        let center = t.floor() as isize;
-        let mut acc = 0.0f64;
-        for k in (center - half + 1)..=(center + half) {
-            if k < 0 || k as usize >= input.len() {
-                continue;
+    for n in 0..out_len as u64 {
+        let (center, phase) = ((n * step / period) as isize, n * step % period);
+        let weights = match &table {
+            Some(t) => &t[phase as usize * taps..][..taps],
+            None => {
+                row.iter_mut().zip(weights_at(phase)).for_each(|(r, w)| *r = w);
+                &row[..]
             }
-            let d = t - k as f64;
-            let x = cutoff * d;
-            let sinc = if x.abs() < 1e-9 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
-            let w = 0.5 + 0.5 * (std::f64::consts::PI * d / half as f64).cos();
-            acc += input[k as usize] as f64 * cutoff * sinc * w;
+        };
+        let first = center - half + 1;
+        let mut acc = 0.0f64;
+        for (j, w) in weights.iter().enumerate() {
+            let k = first + j as isize;
+            if k >= 0 && (k as usize) < input.len() {
+                acc += input[k as usize] as f64 * w;
+            }
         }
         out.push(acc as f32);
     }
     out
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 /// Cuts leading/trailing silence (20 ms frames below -45 dBFS), keeping 250 ms padding.
@@ -374,4 +400,43 @@ mod tests {
         assert_eq!(o, order(&[Some("USB Audio Device"), None, Some("MacBook Pro Microphone")]));
         assert!(!remember_mics(&mut o, &names()));
     }
+
+    /// The resampler as first written: every tap's weight computed for every sample.
+    fn resample_reference(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+        let ratio = to as f64 / from as f64;
+        let cutoff = ratio.min(1.0) * 0.95;
+        let half = (16.0 / cutoff).ceil() as isize;
+        let out_len = (input.len() as f64 * ratio).floor() as usize;
+        (0..out_len)
+            .map(|n| {
+                let t = n as f64 / ratio;
+                let center = t.floor() as isize;
+                let mut acc = 0.0f64;
+                for k in (center - half + 1)..=(center + half) {
+                    if k < 0 || k as usize >= input.len() {
+                        continue;
+                    }
+                    let d = t - k as f64;
+                    let x = cutoff * d;
+                    let sinc = if x.abs() < 1e-9 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
+                    let w = 0.5 + 0.5 * (std::f64::consts::PI * d / half as f64).cos();
+                    acc += input[k as usize] as f64 * cutoff * sinc * w;
+                }
+                acc as f32
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resample_matches_the_reference_at_common_and_odd_rates() {
+        let input: Vec<f32> = (0..9_000).map(|i| ((i * 7919 % 1000) as f32 / 500.0 - 1.0) * 0.5).collect();
+        for from in [48_000, 44_100, 22_050, 8_000, 96_000, 47_999] {
+            let (fast, slow) = (super::resample(&input, from, 16_000), resample_reference(&input, from, 16_000));
+            assert_eq!(fast.len(), slow.len(), "{from} Hz");
+            let worst = fast.iter().zip(&slow).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-5, "{from} Hz: off by {worst}");
+        }
+        assert_eq!(super::resample(&input, 16_000, 16_000), input);
+    }
+
 }
