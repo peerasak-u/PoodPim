@@ -9,27 +9,54 @@
     --bg: #f2f2f7; --card: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea;
     --accent: #0fa3a0; --accent-text: #ffffff; --danger: #d70015; --field: #ffffff; --field-line: #d2d2d7;
     --toggle-off: #e5e5ea; --seg: #e3e3e8; --seg-on: #ffffff; --shadow: 0 1px 2px rgba(0,0,0,.06);
+    --side: #e8e8ed;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #1c1c1e; --card: #2c2c2e; --text: #f5f5f7; --muted: #98989d; --line: #3a3a3c;
       --accent: #2ec4b6; --accent-text: #00201e; --danger: #ff6961; --field: #1c1c1e; --field-line: #48484a;
       --toggle-off: #48484a; --seg: #1c1c1e; --seg-on: #48484a; --shadow: none;
+      --side: #232325;
     }
   }
+  /* Thai in Sukhumvit Set, which has no loops (หัว); the system font falls back to Thonburi, which
+     does. Elsewhere (Windows) local() finds nothing and the next font in the list is used. */
+  @font-face { font-family: "Thai UI"; src: local("SukhumvitSet-Text"); font-weight: 100 450; unicode-range: U+0E00-0E7F; }
+  @font-face { font-family: "Thai UI"; src: local("SukhumvitSet-Medium"); font-weight: 451 550; unicode-range: U+0E00-0E7F; }
+  @font-face { font-family: "Thai UI"; src: local("SukhumvitSet-SemiBold"); font-weight: 551 650; unicode-range: U+0E00-0E7F; }
+  @font-face { font-family: "Thai UI"; src: local("SukhumvitSet-Bold"); font-weight: 651 900; unicode-range: U+0E00-0E7F; }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text); }
   body {
-    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Leelawadee UI", "Thonburi", sans-serif;
-    padding: 20px 20px 28px; -webkit-user-select: none; user-select: none; cursor: default;
+    font: 14px/1.45 "Thai UI", -apple-system, BlinkMacSystemFont, "Segoe UI", "Leelawadee UI", "Thonburi", sans-serif;
+    -webkit-user-select: none; user-select: none; cursor: default; overflow: hidden;
   }
-  header { display: flex; align-items: center; gap: 14px; margin: 4px 4px 18px; }
-  header .logo { width: 52px; height: 52px; flex: none; }
-  header .logo svg { width: 100%; height: 100%; display: block; }
-  header h1 { font-size: 19px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
-  header .status { color: var(--muted); font-size: 13px; margin-top: 2px; }
-  header .status b { font-weight: 500; color: var(--text); }
+  .layout { display: flex; height: 100vh; }
+  nav.sidebar { width: 196px; flex: none; padding: 14px 10px; background: var(--side); border-right: 1px solid var(--line);
+    overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 16px; }
+  .brand .logo { width: 38px; height: 38px; flex: none; }
+  .brand .logo svg { width: 100%; height: 100%; display: block; }
+  .brand .app-name { font-size: 15px; font-weight: 650; }
+  .brand .app-name .count { font-weight: 400; font-size: 12px; }
+  .brand .status { color: var(--muted); font-size: 11.5px; line-height: 1.3; margin-top: 1px; }
+  .brand .status b { font-weight: 500; }
+  nav button { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: transparent; color: var(--text);
+    font: inherit; font-size: 13.5px; padding: 7px 10px; border-radius: 8px; cursor: pointer; text-align: left; }
+  nav button svg, .btn.icon svg, .tool svg, .grip svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  nav button svg { color: var(--muted); }
+  nav button:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  nav button[aria-current="page"] { background: color-mix(in srgb, var(--accent) 16%, transparent); font-weight: 600; }
+  nav button[aria-current="page"] svg { color: var(--accent); }
+  nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  main { flex: 1; min-width: 0; overflow-y: auto; padding: 22px 28px 28px; }
+  main .inner { max-width: 640px; margin: 0 auto; }
+  .page:not(.active) { display: none; }
+  .page-title { font-size: 20px; font-weight: 650; letter-spacing: -.01em; margin: 4px 4px 14px; }
+  #permission { margin-bottom: 14px; }
   h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 22px 14px 6px; letter-spacing: .02em; }
+  .page-title + h2 { margin-top: 0; }
   .card { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
   .row { display: flex; align-items: center; gap: 14px; padding: 11px 14px; min-height: 46px; }
   .row + .row { border-top: 1px solid var(--line); }
@@ -67,6 +94,26 @@
   .spots .top { top: 7px; } .spots .bottom { bottom: 7px; }
   .spots .left { left: 7px; } .spots .right { right: 7px; } .spots .center { left: calc(50% - 13px); }
 
+  /* microphone order */
+  .btn.icon { padding: 5px 7px; display: inline-flex; }
+  #mic-list { list-style: none; margin: 0; padding: 0 8px 8px; }
+  #mic-list li { display: flex; align-items: center; gap: 10px; padding: 6px 6px; border-radius: 8px; min-height: 36px; }
+  #mic-list li:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+  #mic-list li.over { box-shadow: inset 0 2px 0 var(--accent); }
+  #mic-list li.dragging { opacity: .4; }
+  #mic-list li.unused .name { color: var(--muted); }
+  #mic-list .num { width: 16px; text-align: right; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+  #mic-list .name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #mic-list .badge { flex: none; font-size: 11px; color: var(--muted); }
+  #mic-list .badge.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); padding: 1px 6px; border-radius: 5px; }
+  #mic-list .tools { margin-left: auto; display: flex; align-items: center; gap: 2px; flex: none; color: var(--muted); }
+  #mic-list .grip { display: inline-flex; padding: 4px; cursor: grab; }
+  .tool { border: 0; background: transparent; color: var(--muted); padding: 4px; border-radius: 6px; cursor: pointer; display: inline-flex; }
+  .tool:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .tool:disabled { opacity: .3; }
+  .tool svg { width: 15px; height: 15px; }
+  .tool-space { width: 23px; }
+
   /* buttons and fields */
   button.btn { border: 1px solid var(--field-line); background: var(--field); color: var(--text); font: inherit; font-size: 13px;
     padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none; white-space: nowrap; }
@@ -90,24 +137,175 @@
     background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 13px; transition: all .2s; }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
   body:not(.ready) * { transition: none !important; }
-  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 18px; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 22px; }
 </style>
 </head>
 <body>
-<header>
-  <div class="logo">{{LOGO}}</div>
-  <div>
-    <h1>PoodPim <span id="version" class="count" style="font-weight:400;font-size:14px"></span></h1>
-    <div class="status" id="status"></div>
+<div class="layout">
+<nav class="sidebar" aria-label="หมวดการตั้งค่า">
+  <div class="brand">
+    <div class="logo">{{LOGO}}</div>
+    <div>
+      <div class="app-name">PoodPim <span id="version" class="count"></span></div>
+      <div class="status" id="status"></div>
+    </div>
   </div>
-</header>
-
+    <button data-page="general"><svg viewBox="0 0 24 24"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>ทั่วไป</button>
+    <button data-page="talk"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>ปุ่มพูด</button>
+    <button data-page="voice"><svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>เสียง</button>
+    <button data-page="text"><svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>ข้อความ</button>
+    <button data-page="vocab"><svg viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>คำศัพท์</button>
+    <button data-page="post"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 10.7l-6.1 1.9L12 18.5l-1.9-5.9L4 10.7l6.1-1.9z"/><path d="M19 17v4M17 19h4"/></svg>ปรับข้อความ</button>
+    <button data-page="about"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>เกี่ยวกับ</button>
+</nav>
+<main>
+<div class="inner">
 <div class="card notice warn hidden" id="permission">
   <div class="row">
     <div class="text"><div class="label">ต้องให้สิทธิ์ Accessibility</div>
       <div class="hint">เพื่อให้ปุ่ม <span class="talkkey"></span> ใช้พูดได้ และให้แอปวางข้อความให้</div></div>
     <button class="btn" data-open="accessibility">เปิดการตั้งค่า…</button>
   </div>
+</div>
+
+<section class="page" data-page="general">
+<h1 class="page-title">ทั่วไป</h1>
+<div class="card">
+  <div class="row">
+    <div class="text"><div class="label">ตำแหน่งแถบพูด</div>
+      <div class="hint" id="pill-position-hint"></div></div>
+    <div class="spots" role="group" aria-label="ตำแหน่งแถบพูด">
+      <button class="top left" data-pill-position="top_left" aria-label="บนซ้าย"></button>
+      <button class="top center" data-pill-position="top_center" aria-label="บนกลาง"></button>
+      <button class="top right" data-pill-position="top_right" aria-label="บนขวา"></button>
+      <button class="bottom left" data-pill-position="bottom_left" aria-label="ล่างซ้าย"></button>
+      <button class="bottom center" data-pill-position="bottom_center" aria-label="ล่างกลาง"></button>
+      <button class="bottom right" data-pill-position="bottom_right" aria-label="ล่างขวา"></button>
+    </div>
+  </div>
+  <div class="row">
+    <div class="text"><div class="label">คืนข้อความเดิมใน clipboard หลังวาง</div>
+      <div class="hint">และไม่ให้ข้อความที่พูดไปค้างในประวัติ clipboard</div></div>
+    <label class="switch"><input type="checkbox" data-set="restore"><span></span></label>
+  </div>
+  <div class="row">
+    <div class="text"><div class="label">คืน RAM เมื่อไม่ได้ใช้</div>
+      <div class="hint">คืนราว 0.75 GB · กดพูดครั้งถัดไปแอปโหลดโมเดลระหว่างที่คุณพูด (1–3 วินาที)</div></div>
+    <select class="field" id="unload" aria-label="คืน RAM เมื่อไม่ได้ใช้">
+      <option value="off">ไม่คืน</option>
+      <option value="0">ทันทีหลังพูดเสร็จ</option>
+      <option value="2">2 นาที</option>
+      <option value="5">5 นาที</option>
+      <option value="10">10 นาที</option>
+      <option value="15">15 นาที</option>
+      <option value="30">30 นาที</option>
+      <option value="60">1 ชั่วโมง</option>
+    </select>
+  </div>
+  <div class="row">
+    <div class="text"><div class="label">เปิด PoodPim เมื่อเข้าเครื่อง</div></div>
+    <label class="switch"><input type="checkbox" data-set="autostart"><span></span></label>
+  </div>
+</div>
+</section>
+
+<section class="page" data-page="talk">
+<h1 class="page-title">ปุ่มพูด</h1>
+<div class="card">
+  <div class="row" id="talk-key-row">
+    <div class="text"><div class="label">ปุ่มที่ใช้พูด</div>
+      <div class="hint" id="talk-key-hint"></div></div>
+    <div class="seg" role="group" aria-label="ปุ่มที่ใช้พูด">
+      <button data-talk-key="right_option">⌥ ขวา</button>
+      <button data-talk-key="right_control">⌃ ขวา</button>
+      <button data-talk-key="fn">fn 🌐</button>
+    </div>
+  </div>
+  <div class="row" id="talk-capture-row">
+    <div class="text"><div class="label">ปุ่มอื่น หรือปุ่มลัด</div>
+      <div class="hint">เช่น ⌥Space, ⌃⌥Space หรือ F5 · แอปอื่นจะไม่เห็นปุ่มนี้ (ยกเว้นในช่องรหัสผ่าน)</div></div>
+    <button class="btn" id="talk-capture"></button>
+  </div>
+  <div class="row">
+    <div class="text"><div class="label">วิธีกด</div>
+      <div class="hint" id="talk-mode-hint"></div></div>
+    <div class="seg" role="group" aria-label="วิธีกด">
+      <button data-talk-mode="hold_or_tap">ค้างหรือแตะ</button>
+      <button data-talk-mode="hold">กดค้าง</button>
+      <button data-talk-mode="toggle">แตะเริ่ม/จบ</button>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="page" data-page="voice">
+<h1 class="page-title">เสียง</h1>
+<h2>ไมโครโฟน</h2>
+<div class="card" id="mic-card">
+  <div class="row">
+    <div class="text"><div class="label">ลำดับไมโครโฟน</div>
+      <div class="hint">แอปใช้ไมค์ตัวแรกในรายการที่ต่ออยู่ · ลากหรือกดลูกศรเพื่อเรียง · เช่น ไมค์ในเครื่องก่อนหูฟัง Bluetooth เสียงเพลงจะไม่ถูกลดคุณภาพตอนพูด</div></div>
+    <button class="btn icon" id="mic-refresh" title="หาไมค์อีกครั้ง" aria-label="หาไมค์อีกครั้ง">
+      <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></svg>
+    </button>
+  </div>
+  <ol id="mic-list"></ol>
+  <script>
+    (() => {
+      const list = document.getElementById("mic-list");
+      let rows = [], asked = false, dragFrom = null;
+      const save = (next) => send({ cmd: "mic", order: next.map((r) => r.name) });
+      const move = (from, to) => {
+        if (to < 0 || to >= rows.length || from === to) return;
+        const next = rows.slice(); next.splice(to, 0, next.splice(from, 1)[0]); save(next);
+      };
+      const icon = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
+      const UP = icon('<path d="m18 15-6-6-6 6"/>'), DOWN = icon('<path d="m6 9 6 6 6-6"/>'),
+        REMOVE = icon('<path d="M18 6 6 18M6 6l12 12"/>'),
+        GRIP = icon('<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>');
+      document.addEventListener("poodpim:state", (e) => {
+        const m = e.detail.mic;
+        if (!asked) { asked = true; send({ cmd: "mic", action: "refresh" }); }
+        const key = JSON.stringify(m);
+        if (key === list.dataset.key) return;
+        list.dataset.key = key;
+        rows = m.rows;
+        const fallback = rows.findIndex((r) => r.name === null);
+        list.replaceChildren(...rows.map((r, i) => {
+          const li = document.createElement("li");
+          li.draggable = true;
+          li.classList.toggle("unused", i > fallback);
+          const name = document.createElement("span"); name.className = "name";
+          if (r.name === null) {
+            name.textContent = "ค่าเริ่มต้นของระบบ";
+            if (m.defaultName) { const d = document.createElement("span"); d.className = "count"; d.textContent = ` · ${m.defaultName}`; name.append(d); }
+          } else name.textContent = r.name;
+          const badge = document.createElement("span");
+          if (r.inUse) { badge.className = "badge on"; badge.textContent = "กำลังใช้"; }
+          else if (m.listed && !r.connected) { badge.className = "badge"; badge.textContent = "ไม่ได้ต่ออยู่"; }
+          const tools = document.createElement("span"); tools.className = "tools";
+          const tool = (html, label, fn, enabled = true) => {
+            const b = document.createElement("button"); b.className = "tool"; b.innerHTML = html; b.title = label;
+            b.setAttribute("aria-label", label); b.disabled = !enabled; b.addEventListener("click", fn); tools.append(b);
+          };
+          tools.insertAdjacentHTML("beforeend", `<span class="grip" aria-hidden="true">${GRIP}</span>`);
+          tool(UP, "เลื่อนขึ้น", () => move(i, i - 1), i > 0);
+          tool(DOWN, "เลื่อนลง", () => move(i, i + 1), i < rows.length - 1);
+          if (r.name !== null) tool(REMOVE, "ลบออกจากรายการ", () => save(rows.filter((_, j) => j !== i)));
+          else tools.insertAdjacentHTML("beforeend", '<span class="tool-space"></span>');
+          const n = document.createElement("span"); n.className = "num"; n.textContent = i + 1;
+          li.append(n, name, badge, tools);
+          li.addEventListener("dragstart", (ev) => { dragFrom = i; ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(i)); li.classList.add("dragging"); });
+          li.addEventListener("dragend", () => { dragFrom = null; li.classList.remove("dragging"); list.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); });
+          li.addEventListener("dragover", (ev) => { if (dragFrom === null) return; ev.preventDefault(); li.classList.add("over"); });
+          li.addEventListener("dragleave", () => li.classList.remove("over"));
+          li.addEventListener("drop", (ev) => { ev.preventDefault(); if (dragFrom !== null) move(dragFrom, i); });
+          return li;
+        }));
+      });
+      document.getElementById("mic-refresh").addEventListener("click", () => send({ cmd: "mic", action: "refresh" }));
+    })();
+  </script>
 </div>
 
 <h2>การถอดเสียง</h2>
@@ -140,77 +338,10 @@
     <label class="switch"><input type="checkbox" data-set="mixed"><span></span></label>
   </div>
 </div>
+</section>
 
-<h2>ปุ่มพูด</h2>
-<div class="card">
-  <div class="row" id="talk-key-row">
-    <div class="text"><div class="label">ปุ่มที่ใช้พูด</div>
-      <div class="hint" id="talk-key-hint"></div></div>
-    <div class="seg" role="group" aria-label="ปุ่มที่ใช้พูด">
-      <button data-talk-key="right_option">⌥ ขวา</button>
-      <button data-talk-key="right_control">⌃ ขวา</button>
-      <button data-talk-key="fn">fn 🌐</button>
-    </div>
-  </div>
-  <div class="row" id="talk-capture-row">
-    <div class="text"><div class="label">ปุ่มอื่น หรือปุ่มลัด</div>
-      <div class="hint">เช่น ⌥Space, ⌃⌥Space หรือ F5 · แอปอื่นจะไม่เห็นปุ่มนี้ (ยกเว้นในช่องรหัสผ่าน)</div></div>
-    <button class="btn" id="talk-capture"></button>
-  </div>
-  <div class="row">
-    <div class="text"><div class="label">วิธีกด</div>
-      <div class="hint" id="talk-mode-hint"></div></div>
-    <div class="seg" role="group" aria-label="วิธีกด">
-      <button data-talk-mode="hold_or_tap">ค้างหรือแตะ</button>
-      <button data-talk-mode="hold">กดค้าง</button>
-      <button data-talk-mode="toggle">แตะเริ่ม/จบ</button>
-    </div>
-  </div>
-</div>
-
-<h2>ไมโครโฟน</h2>
-<div class="card" id="mic-card">
-  <style>
-    #mic-select { font: inherit; font-size: 13px; color: var(--text); background: var(--field); border: 1px solid var(--field-line);
-      border-radius: 7px; padding: 5px 8px; max-width: 220px; flex: none; }
-    #mic-select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); border-color: var(--accent); }
-  </style>
-  <div class="row">
-    <div class="text"><div class="label">ไมโครโฟนที่ใช้</div>
-      <div class="hint" id="mic-hint"></div></div>
-    <select id="mic-select"></select>
-    <button class="btn" id="mic-refresh">รีเฟรช</button>
-  </div>
-  <script>
-    (() => {
-      const HINT = "เลือกไมค์ในเครื่องแทนหูฟัง Bluetooth ได้ เสียงเพลงจะไม่ถูกลดคุณภาพตอนพูด";
-      const MISSING = "ไม่เจอไมค์นี้ ตอนนี้ใช้ไมค์เริ่มต้นของระบบแทน";
-      const select = document.getElementById("mic-select");
-      let listed = false, shown = "";
-      document.addEventListener("poodpim:state", (e) => {
-        const m = e.detail.mic;
-        if (!listed) { listed = true; send({ cmd: "mic", action: "refresh" }); }
-        const opts = [{ value: "", text: "ตามค่าเริ่มต้นของระบบ" }];
-        m.devices.forEach((d) => opts.push({ value: d, text: d }));
-        if (m.selected !== null && !m.devices.includes(m.selected))
-          opts.push({ value: m.selected, text: m.missing ? `${m.selected} (ไม่ได้ต่ออยู่)` : m.selected });
-        const key = JSON.stringify(opts);
-        if (key !== shown) {
-          shown = key;
-          select.replaceChildren(...opts.map((o) => {
-            const el = document.createElement("option"); el.value = o.value; el.textContent = o.text; return el;
-          }));
-        }
-        select.value = m.selected ?? "";
-        $("mic-hint").textContent = m.missing ? MISSING : HINT;
-      });
-      select.addEventListener("change", () => send({ cmd: "mic", value: select.value === "" ? null : select.value }));
-      document.getElementById("mic-refresh").addEventListener("click", () => send({ cmd: "mic", action: "refresh" }));
-    })();
-  </script>
-</div>
-
-<h2>ข้อความ</h2>
+<section class="page" data-page="text">
+<h1 class="page-title">ข้อความ</h1>
 <div class="card">
   <div class="row">
     <div class="text"><div class="label">พิมพ์ระหว่างพูด</div>
@@ -219,7 +350,7 @@
   </div>
   <div class="row">
     <div class="text"><div class="label">แสดงคำที่พูดในแถบลอย</div>
-      <div class="hint">ระหว่างพูด แถบด้านล่างจอจะแสดงคำที่แอปได้ยินจนถึงตอนนี้ (ถอดในเครื่องเท่านั้น ใช้ CPU เพิ่มเล็กน้อย)</div></div>
+      <div class="hint">ระหว่างพูด แถบลอยจะแสดงคำที่แอปได้ยินจนถึงตอนนี้ (ถอดในเครื่องเท่านั้น ใช้ CPU เพิ่มเล็กน้อย)</div></div>
     <label class="switch"><input type="checkbox" data-set="preview"><span></span></label>
   </div>
   <div class="row">
@@ -227,6 +358,12 @@
       <div class="hint">"สองร้อยห้าสิบ" → 250 · "ห้าสิบเปอร์เซ็นต์" → 50%</div></div>
     <label class="switch"><input type="checkbox" data-set="digits"><span></span></label>
   </div>
+</div>
+</section>
+
+<section class="page" data-page="vocab">
+<h1 class="page-title">คำศัพท์</h1>
+<div class="card">
   <div class="row">
     <div class="text"><div class="label">คำศัพท์ของฉัน <span class="count" id="vocab-count"></span></div>
       <div class="hint">คำที่อยากให้ออกมาเป็นภาษาอังกฤษ ช่วยให้ถอดคำเหล่านี้ถูกบ่อยขึ้น</div></div>
@@ -247,8 +384,10 @@
     </div>
   </div>
 </div>
+</section>
 
-<h2>ปรับข้อความ</h2>
+<section class="page" data-page="post">
+<h1 class="page-title">ปรับข้อความ</h1>
 <div class="card" id="post-card">
   <div class="row">
     <div class="text"><div class="label">ตัดคำอุทาน</div>
@@ -310,47 +449,10 @@
   // Tests what is in the fields, so they are saved first.
   document.getElementById("post-test").addEventListener("click", () => { if (postSave()) send({ cmd: "post", action: "test" }); });
 </script>
+</section>
 
-<h2>ทั่วไป</h2>
-<div class="card">
-  <div class="row">
-    <div class="text"><div class="label">ตำแหน่งแถบพูด</div>
-      <div class="hint" id="pill-position-hint"></div></div>
-    <div class="spots" role="group" aria-label="ตำแหน่งแถบพูด">
-      <button class="top left" data-pill-position="top_left" aria-label="บนซ้าย"></button>
-      <button class="top center" data-pill-position="top_center" aria-label="บนกลาง"></button>
-      <button class="top right" data-pill-position="top_right" aria-label="บนขวา"></button>
-      <button class="bottom left" data-pill-position="bottom_left" aria-label="ล่างซ้าย"></button>
-      <button class="bottom center" data-pill-position="bottom_center" aria-label="ล่างกลาง"></button>
-      <button class="bottom right" data-pill-position="bottom_right" aria-label="ล่างขวา"></button>
-    </div>
-  </div>
-  <div class="row">
-    <div class="text"><div class="label">คืนข้อความเดิมใน clipboard หลังวาง</div>
-      <div class="hint">และไม่ให้ข้อความที่พูดไปค้างในประวัติ clipboard</div></div>
-    <label class="switch"><input type="checkbox" data-set="restore"><span></span></label>
-  </div>
-  <div class="row">
-    <div class="text"><div class="label">คืน RAM เมื่อไม่ได้ใช้</div>
-      <div class="hint">คืนราว 0.75 GB · กดพูดครั้งถัดไปแอปโหลดโมเดลระหว่างที่คุณพูด (1–3 วินาที)</div></div>
-    <select class="field" id="unload" aria-label="คืน RAM เมื่อไม่ได้ใช้">
-      <option value="off">ไม่คืน</option>
-      <option value="0">ทันทีหลังพูดเสร็จ</option>
-      <option value="2">2 นาที</option>
-      <option value="5">5 นาที</option>
-      <option value="10">10 นาที</option>
-      <option value="15">15 นาที</option>
-      <option value="30">30 นาที</option>
-      <option value="60">1 ชั่วโมง</option>
-    </select>
-  </div>
-  <div class="row">
-    <div class="text"><div class="label">เปิด PoodPim เมื่อเข้าเครื่อง</div></div>
-    <label class="switch"><input type="checkbox" data-set="autostart"><span></span></label>
-  </div>
-</div>
-
-<h2>เกี่ยวกับ</h2>
+<section class="page" data-page="about">
+<h1 class="page-title">เกี่ยวกับ</h1>
 <div class="card">
   <div class="row">
     <div class="text"><div class="label">อัปเดต</div><div class="hint" id="update-hint">แอปตรวจให้เองวันละครั้ง</div></div>
@@ -365,8 +467,12 @@
     <button class="btn danger" id="uninstall">ถอนการติดตั้ง…</button>
   </div>
 </div>
+</section>
 
 <footer id="footer"></footer>
+</div>
+</main>
+</div>
 <div id="toast" role="status"></div>
 
 <script>
@@ -477,6 +583,18 @@
     if (state && state.talkCapturing) { e.preventDefault(); return; } // the key being recorded
     if (e.key === "Escape" || ((e.metaKey || e.ctrlKey) && e.key === "w")) send({ cmd: "close" });
   });
+  const showPage = (name) => {
+    if (!document.querySelector(`section.page[data-page="${name}"]`)) name = "general";
+    document.querySelectorAll("section.page").forEach((p) => p.classList.toggle("active", p.dataset.page === name));
+    document.querySelectorAll("nav [data-page]").forEach((b) => {
+      if (b.dataset.page === name) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    });
+    document.querySelector("main").scrollTop = 0;
+    try { localStorage.setItem("page", name); } catch {}
+  };
+  document.querySelectorAll("nav [data-page]").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
+  let saved = null; try { saved = localStorage.getItem("page"); } catch {}
+  showPage(saved || "general");
   send({ cmd: "ready" });
 </script>
 </body>

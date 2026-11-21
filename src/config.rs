@@ -20,9 +20,15 @@ pub enum Backend {
 #[serde(default)]
 pub struct Config {
     pub backend: Backend,
-    /// Input device name; None = the system default (also while that device is not connected).
-    #[serde(deserialize_with = "crate::audio::de_device_name")]
-    pub microphone: Option<String>,
+    /// Microphones by preference: each recording uses the first one connected (see
+    /// audio::choose). None is the system default, which is always there, so the ones below it
+    /// are remembered but unused until moved above it.
+    #[serde(deserialize_with = "crate::audio::de_mic_list")]
+    pub microphones: Vec<Option<String>>,
+    /// The single microphone of older versions (None = the system default). Read once into
+    /// `microphones`, never written.
+    #[serde(deserialize_with = "crate::audio::de_device_name", skip_serializing)]
+    microphone: Option<String>,
     /// Lambda Function URL, e.g. https://xxxx.lambda-url.ap-southeast-7.on.aws/
     pub server_url: String,
     pub api_key: String,
@@ -65,6 +71,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             backend: Backend::Local,
+            microphones: vec![None],
             microphone: None,
             server_url: String::new(),
             api_key: String::new(),
@@ -134,7 +141,17 @@ pub fn path() -> PathBuf {
 }
 
 fn read(p: &std::path::Path) -> Option<Config> {
-    serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+    parse(&std::fs::read_to_string(p).ok()?)
+}
+
+/// A config file's text, with an older version's single microphone moved to the top of the list.
+fn parse(text: &str) -> Option<Config> {
+    let mut c: Config = serde_json::from_str(text).ok()?;
+    if let Some(name) = c.microphone.take() {
+        c.microphones.insert(0, Some(name));
+    }
+    crate::audio::tidy_mics(&mut c.microphones);
+    Some(c)
 }
 
 /// Settings bundled for people the app is shared with (see scripts/package-macos.sh):
@@ -251,5 +268,20 @@ mod tests {
         assert_eq!(c.unload_min(), None);
         c.unload_when_idle = true;
         assert_eq!(c.unload_min(), Some(30));
+    }
+
+    #[test]
+    fn microphone_list_defaults_and_migrates() {
+        let list = |text: &str| super::parse(text).unwrap().microphones;
+        assert_eq!(list("{}"), vec![None]);
+        // An older version's single choice moves to the top; the system default follows.
+        assert_eq!(list(r#"{"microphone": "HyperX SoloCast"}"#), vec![Some("HyperX SoloCast".into()), None]);
+        assert_eq!(list(r#"{"microphone": null}"#), vec![None]);
+        let c = super::parse(r#"{"microphones": ["ไมค์ USB “Blue Yeti” 🎙", 5, null], "mixed_english": false}"#).unwrap();
+        assert_eq!(c.microphones, vec![Some("ไมค์ USB “Blue Yeti” 🎙".into()), None]);
+        assert!(!c.mixed_english);
+        // Written back as the list only.
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains(r#""microphones":["ไมค์ USB “Blue Yeti” 🎙",null]"#) && !text.contains(r#""microphone":"#));
     }
 }

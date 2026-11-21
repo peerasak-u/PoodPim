@@ -38,8 +38,8 @@ impl SettingsWindow {
     pub fn open<T: 'static>(target: &EventLoopWindowTarget<T>, on_message: impl Fn(String) + 'static) -> Result<Self> {
         let window = WindowBuilder::new()
             .with_title("PoodPim Settings")
-            .with_inner_size(LogicalSize::new(560.0, 720.0))
-            .with_min_inner_size(LogicalSize::new(460.0, 420.0))
+            .with_inner_size(LogicalSize::new(820.0, 640.0))
+            .with_min_inner_size(LogicalSize::new(640.0, 440.0))
             .with_window_icon(tao::window::Icon::from_rgba(ICON.to_vec(), 64, 64).ok())
             .build(target)
             .context("opening the settings window")?;

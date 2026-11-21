@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use crate::features::SAMPLE_RATE;
 
 #[cfg(feature = "desktop")]
-pub use recorder::{Recorder, input_names};
+pub use recorder::{Recorder, default_input_name, input_names};
 
 /// Reads the stored microphone name leniently: anything but a string (a hand-edited
 /// `config.json`) means the system default instead of failing the whole file.
@@ -18,11 +18,63 @@ pub fn de_device_name<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Re
     Ok(v.as_str().map(str::to_string))
 }
 
-/// Which of `names` to open for the stored microphone `wanted`: the first exact match, or
-/// None for the system default (nothing stored, or that device is not connected now).
-pub fn choose(names: &[String], wanted: Option<&str>) -> Option<usize> {
-    let wanted = wanted?;
-    names.iter().position(|n| n == wanted)
+/// Reads the microphone list leniently: names are kept, null is the system default, anything
+/// else (a hand-edited `config.json`) is dropped rather than failing the whole file.
+pub fn de_mic_list<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<Option<String>>, D::Error> {
+    let v = <serde_json::Value as serde::Deserialize>::deserialize(d)?;
+    let items = v.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok(items
+        .iter()
+        .filter_map(|x| match x {
+            serde_json::Value::Null => Some(None),
+            serde_json::Value::String(s) => Some(Some(s.clone())),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Which of the connected `names` to open for the preference list `order`: the first entry that
+/// is connected, matched by exact name. None for the system default: reached in the list, or
+/// nothing listed is connected.
+pub fn choose(names: &[String], order: &[Option<String>]) -> Option<usize> {
+    for wanted in order {
+        match wanted {
+            None => return None,
+            Some(w) => {
+                if let Some(i) = names.iter().position(|n| n == w) {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Keeps a preference list sound: no blank or repeated names, and the system default exactly
+/// once (at the end if it was missing).
+pub fn tidy_mics(order: &mut Vec<Option<String>>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut default = false;
+    order.retain(|m| match m {
+        None => !std::mem::replace(&mut default, true),
+        Some(name) => !name.trim().is_empty() && seen.insert(name.clone()),
+    });
+    if !default {
+        order.push(None);
+    }
+}
+
+/// Adds connected microphones not in `order` yet to its end, so they can be moved up later.
+/// Returns whether anything was added.
+pub fn remember_mics(order: &mut Vec<Option<String>>, names: &[String]) -> bool {
+    let before = order.len();
+    for name in names {
+        if !order.iter().any(|m| m.as_deref() == Some(name)) {
+            order.push(Some(name.clone()));
+        }
+    }
+    tidy_mics(order);
+    order.len() != before
 }
 
 #[cfg(feature = "desktop")]
@@ -48,10 +100,9 @@ impl Recorder {
         Self { stream: None, buf: Arc::new(Mutex::new(Vec::new())), rate: SAMPLE_RATE, device_name: String::new() }
     }
 
-    /// Starts recording from the microphone named `wanted`, or the system default when it is
-    /// None or not connected.
-    pub fn start(&mut self, wanted: Option<&str>) -> Result<()> {
-        let device = pick(wanted)?;
+    /// Starts recording from the first connected microphone in `order` (see `choose`).
+    pub fn start(&mut self, order: &[Option<String>]) -> Result<()> {
+        let device = pick(order)?;
         self.device_name = name_of(&device);
         let supported = device.default_input_config().context("microphone config")?;
         let config = supported.config();
@@ -70,14 +121,14 @@ impl Recorder {
         Ok(())
     }
 
-    /// Opens the microphone (`wanted`, as in `start`) briefly on a background thread and closes
+    /// Opens the microphone (`order`, as in `start`) briefly on a background thread and closes
     /// it again. The first time a process opens it can take seconds (2.7 s measured on a Mac),
     /// long enough to lose the first words or a whole short phrase; afterwards it takes tens of ms.
-    pub fn warm_up(wanted: Option<String>) {
+    pub fn warm_up(order: Vec<Option<String>>) {
         std::thread::spawn(move || {
             let t0 = std::time::Instant::now();
             let r = (|| -> Result<()> {
-                let device = pick(wanted.as_deref())?;
+                let device = pick(&order)?;
                 let supported = device.default_input_config().context("microphone config")?;
                 let stream = match supported.sample_format() {
                     cpal::SampleFormat::F32 => build::<f32>(&device, supported.config(), 1, Arc::new(Mutex::new(Vec::new())))?,
@@ -136,19 +187,23 @@ pub fn input_names() -> Vec<String> {
     }
 }
 
+/// The name of the system's default input device, if there is one.
+pub fn default_input_name() -> Option<String> {
+    cpal::default_host().default_input_device().map(|d| name_of(&d))
+}
+
 fn name_of(device: &cpal::Device) -> String {
     device.description().map(|d| d.name().to_string()).unwrap_or_default()
 }
 
-/// The microphone named `wanted`, or the system default when it is None or not connected.
-fn pick(wanted: Option<&str>) -> Result<cpal::Device> {
+/// The first connected microphone in `order`, or the system default (see `choose`).
+fn pick(order: &[Option<String>]) -> Result<cpal::Device> {
     let host = cpal::default_host();
-    if let Some(name) = wanted {
+    if order.first().is_some_and(Option::is_some) {
         let devices: Vec<cpal::Device> = host.input_devices().map(|d| d.collect()).unwrap_or_default();
         let names: Vec<String> = devices.iter().map(name_of).collect();
-        match super::choose(&names, Some(name)) {
-            Some(i) => return Ok(devices.into_iter().nth(i).expect("index from names")),
-            None => eprintln!("microphone {name:?} not found: using the default"),
+        if let Some(i) = super::choose(&names, order) {
+            return Ok(devices.into_iter().nth(i).expect("index from names"));
         }
     }
     host.default_input_device().ok_or_else(|| anyhow!("no microphone found"))
@@ -269,30 +324,54 @@ pub fn encode_wav(audio: &[f32]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::choose;
+    use super::{choose, remember_mics, tidy_mics};
 
     fn names() -> Vec<String> {
         vec!["MacBook Pro Microphone".into(), "USB Audio Device".into(), "USB Audio Device".into()]
     }
 
-    #[test]
-    fn choose_nothing_stored_uses_default() {
-        assert_eq!(choose(&names(), None), None);
+    fn order(items: &[Option<&str>]) -> Vec<Option<String>> {
+        items.iter().map(|m| m.map(str::to_string)).collect()
     }
 
     #[test]
-    fn choose_exact_match_first_wins() {
-        assert_eq!(choose(&names(), Some("USB Audio Device")), Some(1));
-        assert_eq!(choose(&names(), Some("usb audio device")), None);
+    fn choose_takes_the_first_connected_in_order() {
+        let o = order(&[Some("AirPods"), Some("USB Audio Device"), None, Some("MacBook Pro Microphone")]);
+        assert_eq!(choose(&names(), &o), Some(1));
     }
 
     #[test]
-    fn choose_missing_name_uses_default() {
-        assert_eq!(choose(&names(), Some("AirPods")), None);
+    fn choose_stops_at_the_system_default() {
+        let o = order(&[Some("AirPods"), None, Some("MacBook Pro Microphone")]);
+        assert_eq!(choose(&names(), &o), None);
     }
 
     #[test]
-    fn choose_empty_list_uses_default() {
-        assert_eq!(choose(&[], Some("USB Audio Device")), None);
+    fn choose_matches_names_exactly() {
+        assert_eq!(choose(&names(), &order(&[Some("usb audio device"), None])), None);
+    }
+
+    #[test]
+    fn choose_with_nothing_connected_or_listed_uses_default() {
+        assert_eq!(choose(&[], &order(&[Some("USB Audio Device"), None])), None);
+        assert_eq!(choose(&names(), &[]), None);
+    }
+
+    #[test]
+    fn tidy_keeps_one_default_and_no_repeats() {
+        let mut o = order(&[Some("A"), None, Some(" "), Some("A"), None, Some("B")]);
+        tidy_mics(&mut o);
+        assert_eq!(o, order(&[Some("A"), None, Some("B")]));
+        let mut o = order(&[Some("A")]);
+        tidy_mics(&mut o);
+        assert_eq!(o, order(&[Some("A"), None]));
+    }
+
+    #[test]
+    fn remember_adds_new_microphones_at_the_end() {
+        let mut o = order(&[Some("USB Audio Device"), None]);
+        assert!(remember_mics(&mut o, &names()));
+        assert_eq!(o, order(&[Some("USB Audio Device"), None, Some("MacBook Pro Microphone")]));
+        assert!(!remember_mics(&mut o, &names()));
     }
 }

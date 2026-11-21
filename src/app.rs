@@ -153,6 +153,8 @@ struct App {
     recorder: Recorder,
     /// Input device names for Settings, listed when it asks (None = not listed yet).
     mics: Option<Vec<String>>,
+    /// The system's default microphone when `mics` was listed (Settings shows it by its name).
+    default_mic: Option<String>,
     pressed_at: Instant,
     /// The talk key is (or was last) pressed to start this recording, not to carry it on or
     /// finish it: only such a press may drop it (HotkeyEvent::TalkAborted).
@@ -317,6 +319,7 @@ pub fn run() -> Result<()> {
         load_gen: 0,
         recorder: Recorder::new(),
         mics: None,
+        default_mic: None,
         pressed_at: Instant::now(),
         press_started: false,
         stop_at: None,
@@ -403,7 +406,7 @@ pub fn run() -> Result<()> {
                 app.apply_autostart();
                 // For testing the Settings window without the tray menu.
                 app.want_settings = std::env::var_os("POODPIM_OPEN_SETTINGS").is_some();
-                Recorder::warm_up(app.cfg.microphone.clone());
+                Recorder::warm_up(app.cfg.microphones.clone());
                 app.start_backend();
                 // First launch in Local mode: ask about the model now, not on the first key press.
                 if app.state == State::NeedsModel {
@@ -1291,7 +1294,7 @@ impl App {
                     self.finish();
                 } else if self.state == State::Idle {
                     let started = Instant::now();
-                    match self.recorder.start(self.cfg.microphone.as_deref()) {
+                    match self.recorder.start(&self.cfg.microphones) {
                         Ok(()) => {
                             // From the key press, not from now: opening the microphone can take
                             // a second or more (Windows, Bluetooth headsets), and timing from here
