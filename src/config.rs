@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::hotkey::{Binding, TalkMode};
 use crate::remote::Server;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -23,6 +24,10 @@ pub struct Config {
     pub api_key: String,
     /// Thai + English prompt (63) instead of Thai only (32).
     pub mixed_english: bool,
+    /// The key held (or tapped) to talk, see hotkey.rs. Windows always uses Right Alt.
+    pub talk_key: Binding,
+    /// Hold or tap / hold only / tap to start and stop.
+    pub talk_mode: TalkMode,
     /// Put the previous clipboard back after pasting.
     pub restore_clipboard: bool,
     /// Start the app when the user logs in (macOS LaunchAgent / Windows Run key).
@@ -49,6 +54,8 @@ impl Default for Config {
             server_url: String::new(),
             api_key: String::new(),
             mixed_english: true,
+            talk_key: Binding::DEFAULT,
+            talk_mode: TalkMode::HoldOrTap,
             restore_clipboard: true,
             start_at_login: true,
             numbers_as_digits: true,

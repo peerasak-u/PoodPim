@@ -14,11 +14,21 @@ use core_graphics::event::{
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 use super::{HotkeyEvent, HotkeySink};
+use crate::hotkey::{self, Binding, ModKey, RawKey};
 
-const KEY_RIGHT_OPTION: i64 = 61;
 const KEY_ESC: i64 = 53;
 const KEY_V: u16 = 9;
-const NX_DEVICERALTKEYMASK: u64 = 0x40; // device-dependent bit: right Option is down
+
+/// A talk-key modifier's keycode → the key and the flag bit that is set while it is down
+/// (device-dependent for right ⌥ / ⌃, so the left one doesn't count).
+fn talk_mod(code: i64) -> Option<(ModKey, u64)> {
+    match code {
+        61 => Some((ModKey::RightOption, 0x40)),
+        62 => Some((ModKey::RightControl, 0x2000)),
+        63 => Some((ModKey::Fn, 0x80_0000)),
+        _ => None,
+    }
+}
 
 /// Listens on a background thread with a listen-only CGEventTap. Needs Accessibility
 /// (or Input Monitoring); until granted it reports PermissionMissing and retries.
@@ -51,9 +61,12 @@ pub fn spawn_hotkey_listener(sink: HotkeySink) {
                                 d.store(true, Ordering::SeqCst)
                             }
                             CGEventType::FlagsChanged => {
-                                if event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) == KEY_RIGHT_OPTION {
-                                    let down = event.get_flags().bits() & NX_DEVICERALTKEYMASK != 0;
-                                    s(if down { HotkeyEvent::TalkDown } else { HotkeyEvent::TalkUp });
+                                let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                                if let Some((key, bit)) = talk_mod(code) {
+                                    let down = event.get_flags().bits() & bit != 0;
+                                    if let Some(e) = hotkey::lock().feed(RawKey::Mod { key, down }) {
+                                        s(e);
+                                    }
                                 }
                             }
                             CGEventType::KeyDown => {
@@ -77,6 +90,7 @@ pub fn spawn_hotkey_listener(sink: HotkeySink) {
                 let source = tap.mach_port().create_runloop_source(0).expect("runloop source");
                 CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
                 tap.enable();
+                eprintln!("keyboard tap: listen-only");
                 sink(HotkeyEvent::Ready);
                 loop {
                     CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_secs(1), false);
@@ -141,11 +155,20 @@ pub fn redirect_stderr(file: std::fs::File) {
     unsafe { dup2(fd, 2) };
 }
 
-/// Shown when PoodPim is opened while it is already running.
-pub const ALREADY_RUNNING: &str = "PoodPim เปิดอยู่แล้ว\n\n\
+/// Shown when PoodPim is opened while it is already running (`tap`: press mode "tap to start").
+pub fn already_running(key: Binding, tap: bool) -> String {
+    let key = match key {
+        Binding::Modifier { key: ModKey::RightOption } => "Option ขวา",
+        Binding::Modifier { key: ModKey::RightControl } => "Control ขวา",
+        Binding::Modifier { key: ModKey::Fn } => "fn ",
+    };
+    let how = if tap { format!("แตะ {key}เพื่อเริ่มพูด แล้วแตะอีกครั้งเมื่อจบ") } else { format!("กด {key}ค้างไว้เพื่อพูดได้เลย") };
+    format!(
+        "PoodPim เปิดอยู่แล้ว\n\n\
 ไอคอนไมโครโฟน 🎙 อยู่ที่แถบเมนูด้านบนขวาของจอ ถ้าไม่เห็น อาจถูกรอยบากของจอบังไว้ \
-ลองกด ⌘ ค้างแล้วลากไอคอนอื่นออกจากแถบเมนู หรือดูที่ System Settings › Menu Bar\n\n\
-กด Option ขวาค้างไว้เพื่อพูดได้เลย";
+ลองกด ⌘ ค้างแล้วลากไอคอนอื่นออกจากแถบเมนู หรือดูที่ System Settings › Menu Bar\n\n{how}"
+    )
+}
 
 /// Starts the app at login with a LaunchAgent pointing at this executable (rewritten on every
 /// start, so it follows the app if it is moved). Only for the bundled app, not dev builds.

@@ -23,14 +23,14 @@ pub enum Phase {
 }
 
 impl Phase {
-    fn label(&self) -> String {
+    /// `key`: the talk key's name; `tap`: press mode "tap to start" (nothing to hold).
+    fn label(&self, key: &str, tap: bool) -> String {
         match self {
             Phase::Hidden => String::new(),
-            Phase::Ready => format!("PoodPim พร้อมแล้ว · กด {} ค้างไว้เพื่อพูด", crate::platform::TALK_KEY_LABEL),
+            Phase::Ready if tap => format!("PoodPim พร้อมแล้ว · แตะ {key} เพื่อเริ่มพูด"),
+            Phase::Ready => format!("PoodPim พร้อมแล้ว · กด {key} ค้างไว้เพื่อพูด"),
             Phase::Listening { handsfree: false } => "กำลังฟัง…".into(),
-            Phase::Listening { handsfree: true } => {
-                format!("กำลังฟัง… แตะ {} อีกครั้งเพื่อจบ", crate::platform::TALK_KEY_LABEL)
-            }
+            Phase::Listening { handsfree: true } => format!("กำลังฟัง… แตะ {key} อีกครั้งเพื่อจบ"),
             Phase::Working => "กำลังถอดเสียง…".into(),
             Phase::Done => "✓ พิมพ์แล้ว".into(),
             Phase::Copied => "คัดลอกไว้แล้ว กด Ctrl+V เอง (แอปนี้รันแบบ Administrator)".into(),
@@ -67,6 +67,8 @@ pub struct Overlay {
     phase: Phase,
     /// While listening: the end of what has been said so far, shown instead of the label.
     preview: String,
+    /// The talk key's name and whether it is tapped to start (press mode), for the labels.
+    talk_key: (String, bool),
     since: Instant,
     level: f32,
     shown: f32,
@@ -120,11 +122,20 @@ impl Overlay {
         Self {
             phase: Phase::Hidden,
             preview: String::new(),
+            talk_key: (crate::platform::TALK_KEY_LABEL.into(), false),
             since: Instant::now(),
             level: 0.0,
             shown: 0.0,
             view: None,
         }
+    }
+
+    pub fn set_talk_key(&mut self, key: &str, tap: bool) {
+        self.talk_key = (key.to_string(), tap);
+    }
+
+    fn label(&self) -> String {
+        self.phase.label(&self.talk_key.0, self.talk_key.1)
     }
 
     pub fn set(&mut self, phase: Phase) {
@@ -141,13 +152,13 @@ impl Overlay {
             if self.phase == Phase::Hidden {
                 v.hide();
             } else {
-                v.show(&self.phase.label(), self.phase.rgb());
+                v.show(&self.label(), self.phase.rgb());
                 if !v.on_active_space() {
                     // A new panel joins the Spaces there are now (see View::on_active_space).
                     eprintln!("overlay: not on the current Space, made again");
                     self.view = sys::View::new();
                     if let Some(v) = &self.view {
-                        v.show(&self.phase.label(), self.phase.rgb());
+                        v.show(&self.label(), self.phase.rgb());
                     }
                 }
             }
@@ -164,7 +175,7 @@ impl Overlay {
         }
         self.preview = tail;
         if let Some(v) = &self.view {
-            let label = if self.preview.is_empty() { self.phase.label() } else { self.preview.clone() };
+            let label = if self.preview.is_empty() { self.label() } else { self.preview.clone() };
             v.show(&label, self.phase.rgb());
         }
     }

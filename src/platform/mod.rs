@@ -1,6 +1,7 @@
 //! OS-specific pieces: the global push-to-talk key, the paste keystroke, permissions.
 //!
-//! Push-to-talk key: Right Option (macOS) / Right Alt (Windows). Esc cancels.
+//! Push-to-talk key: Right Option by default on macOS (a setting, see hotkey.rs), always Right
+//! Alt on Windows. Esc cancels.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
