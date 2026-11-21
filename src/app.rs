@@ -581,7 +581,7 @@ impl App {
     fn talk_hint(&self) -> String {
         let (key, cancel) = (self.talk_key().label(), self.cancel_key().label());
         match self.cfg.talk_mode {
-            TalkMode::HoldOrTap => format!("Hold {key} to talk · tap = hands-free · {cancel} = cancel"),
+            TalkMode::Auto => format!("Hold {key} to talk · tap = hands-free, stops when you stop speaking · {cancel} = cancel"),
             TalkMode::Hold => format!("Hold {key} to talk · {cancel} = cancel"),
             TalkMode::Toggle => format!("Tap {key} to start, tap again to finish · {cancel} = cancel"),
         }
@@ -1351,7 +1351,7 @@ impl App {
                 if self.state == State::Recording && !self.handsfree {
                     let held = at.saturating_duration_since(self.pressed_at);
                     eprintln!("talk key held {} ms", held.as_millis());
-                    if held < TAP && self.cfg.talk_mode == TalkMode::HoldOrTap {
+                    if held < TAP && self.cfg.talk_mode == TalkMode::Auto {
                         self.go_handsfree();
                     } else {
                         self.stop_at = Some(at + TAIL);
@@ -1430,8 +1430,14 @@ impl App {
         {
             seg.set_live(); // shorter parts, so text appears sooner
         }
-        self.status_text = format!("Listening… (tap {} to finish)", self.talk_key().label());
+        self.status_text = format!("Listening… ({})", self.finish_hint());
         self.overlay.set(Phase::Listening { handsfree: true });
+    }
+
+    /// How a hands-free recording ends, for the status line.
+    fn finish_hint(&self) -> String {
+        let key = self.talk_key().label();
+        if self.cfg.talk_mode == TalkMode::Auto { format!("stops when you stop speaking, or tap {key}") } else { format!("tap {key} to finish") }
     }
 
     /// Sets up the segmenter and the background transcription worker for a new recording.
@@ -1633,7 +1639,7 @@ impl App {
         }
         let (done, sent) = pipe.progress();
         if sent > 0 {
-            let hint = if self.handsfree { format!(" · tap {} to finish", self.talk_key().label()) } else { String::new() };
+            let hint = if self.handsfree { format!(" · {}", self.finish_hint()) } else { String::new() };
             self.status_text = format!("Listening… {done}/{sent} parts transcribed{hint}");
         }
         self.show_heard(); // a part may have finished since (unchanged text costs nothing)
@@ -1642,6 +1648,15 @@ impl App {
             self.handsfree = false;
             self.finish();
             return;
+        }
+        if self.handsfree && self.cfg.talk_mode == TalkMode::Auto {
+            let pause = self.recorder.with_buffer(|b| crate::segment::trailing_pause(b, rate as usize));
+            if pause.is_some_and(|p| p >= self.cfg.auto_stop_secs.max(0.5)) {
+                eprintln!("{:.1} s of silence: finishing", self.cfg.auto_stop_secs);
+                self.handsfree = false;
+                self.finish();
+                return;
+            }
         }
         self.start_preview();
     }
@@ -1786,6 +1801,7 @@ impl App {
             "cancelIsEsc": self.cancel_key() == Chord::ESCAPE,
             "cancelCapturing": capturing == Some(Target::Cancel),
             "talkMode": self.cfg.talk_mode,
+            "autoStop": self.cfg.auto_stop_secs,
             "pillPosition": self.cfg.pill_position,
             "chooseKey": cfg!(target_os = "macos"),
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
@@ -1862,6 +1878,11 @@ impl App {
                 self.cfg.talk_mode = mode;
                 self.cfg.save();
                 self.apply_talk_key();
+            }
+            "auto_stop" => {
+                let Some(s) = v["value"].as_f64() else { return };
+                self.cfg.auto_stop_secs = (s as f32).clamp(0.5, 30.0);
+                self.cfg.save();
             }
             "pill_position" => {
                 let Ok(position) = serde_json::from_value(v["value"].clone()) else { return };

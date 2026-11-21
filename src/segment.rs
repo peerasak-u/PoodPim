@@ -97,6 +97,33 @@ pub fn quiet_frames(audio: &[f32], rate: usize) -> Vec<bool> {
     db.iter().map(|&d| d < threshold).collect()
 }
 
+/// How long the end of `audio` has been silent, in seconds, once speech has been heard in its
+/// last LISTEN_S: None while nothing that stands out from the background has been said (no
+/// stop before the user starts, or in steady noise). For finishing a hands-free recording
+/// when the user stops speaking.
+pub fn trailing_pause(audio: &[f32], rate: usize) -> Option<f32> {
+    const LISTEN_S: usize = 20;
+    const MIN_SPEECH_MS: usize = 300;
+    const MIN_RANGE_DB: f32 = 15.0;
+    let frame = rate * FRAME_MS / 1000;
+    let tail = &audio[audio.len().saturating_sub(LISTEN_S * rate)..];
+    let db = frame_db(tail, frame);
+    if db.is_empty() {
+        return None;
+    }
+    let (floor, speech) = (percentile(&db, 0.1), percentile(&db, 0.9));
+    if speech - floor < MIN_RANGE_DB {
+        return None;
+    }
+    let threshold = (floor + 8.0).min(speech - 12.0).max(-60.0);
+    let quiet_end = db.iter().rev().take_while(|&&d| d < threshold).count();
+    let spoken = db[..db.len() - quiet_end].iter().filter(|&&d| d >= threshold).count();
+    if spoken * FRAME_MS < MIN_SPEECH_MS {
+        return None;
+    }
+    Some((quiet_end * FRAME_MS) as f32 / 1000.0)
+}
+
 /// Length of a quiet 20 ms frame, in ms.
 pub const QUIET_FRAME_MS: usize = FRAME_MS;
 
@@ -195,4 +222,27 @@ mod tests {
         assert!(segs.len() >= 3);
         assert!(segs.iter().all(|(s, e)| (e - s) as f32 / rate as f32 <= MAX_SEG_S + 0.1));
     }
+
+    #[test]
+    fn trailing_pause_waits_for_speech_then_counts_silence() {
+        let rate = 16_000;
+        let hush = |secs: f32| vec![0.0005f32; (secs * rate as f32) as usize];
+        // Only background so far: the user hasn't started.
+        assert_eq!(trailing_pause(&hush(3.0), rate), None);
+        // Speech, then 1.5 s of quiet.
+        let mut a = hush(0.5);
+        a.extend(tone(2.0, rate));
+        a.extend(hush(1.5));
+        let p = trailing_pause(&a, rate).unwrap();
+        assert!((1.45..=1.55).contains(&p), "{p}");
+        // Still talking.
+        a.extend(tone(0.5, rate));
+        assert_eq!(trailing_pause(&a, rate), Some(0.0));
+        // A click (40 ms) is not speech.
+        let mut c = hush(1.0);
+        c.extend(tone(0.04, rate));
+        c.extend(hush(2.0));
+        assert_eq!(trailing_pause(&c, rate), None);
+    }
+
 }

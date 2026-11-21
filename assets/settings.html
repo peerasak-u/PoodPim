@@ -132,6 +132,25 @@
   .actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
   .count { color: var(--muted); font-variant-numeric: tabular-nums; }
   .hidden { display: none !important; }
+  /* A select with a description under each choice (วิธีกด). The menu is fixed, so the card's
+     overflow doesn't clip it. */
+  .dd-btn { display: inline-flex; align-items: center; gap: 8px; flex: none; font: inherit; font-size: 13.5px; font-weight: 600;
+    color: var(--text); background: var(--field); border: 1px solid var(--field-line); border-radius: 7px; padding: 5px 9px 5px 11px; }
+  .dd-btn svg { color: var(--muted); transition: transform .15s; }
+  .dd-btn[aria-expanded="true"] { border-color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+  .dd-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+  .dd-btn:focus-visible { outline: 2px solid var(--accent); }
+  .dd-menu { position: fixed; z-index: 20; width: 300px; padding: 5px; border-radius: 10px; background: var(--card);
+    border: 1px solid var(--field-line); box-shadow: 0 10px 28px rgba(0,0,0,.22); }
+  .dd-menu button { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: transparent; color: var(--text);
+    font: inherit; text-align: left; padding: 7px 10px; border-radius: 7px; }
+  .dd-menu button:hover, .dd-menu button:focus-visible { background: color-mix(in srgb, var(--text) 7%, transparent); outline: none; }
+  .dd-menu button[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .dd-menu .t { flex: 1; min-width: 0; }
+  .dd-menu b { display: block; font-weight: 600; font-size: 13.5px; }
+  .dd-menu small { display: block; color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 1px; }
+  .dd-menu .check { flex: none; color: var(--accent); visibility: hidden; }
+  .dd-menu button[aria-selected="true"] .check { visibility: visible; }
 
   #toast { position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
     background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 13px; transition: all .2s; }
@@ -226,11 +245,23 @@
   <div class="row">
     <div class="text"><div class="label">วิธีกด</div>
       <div class="hint" id="talk-mode-hint"></div></div>
-    <div class="seg" role="group" aria-label="วิธีกด">
-      <button data-talk-mode="hold_or_tap">ค้างหรือแตะ</button>
-      <button data-talk-mode="hold">กดค้าง</button>
-      <button data-talk-mode="toggle">แตะเริ่ม/จบ</button>
+    <button class="dd-btn" id="talk-mode-btn" aria-haspopup="listbox" aria-expanded="false" aria-label="วิธีกด"><span id="talk-mode-name"></span><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5l3 3 3-3"/></svg></button>
+    <div class="dd-menu hidden" id="talk-mode-menu" role="listbox" aria-label="วิธีกด">
+      <button role="option" data-talk-mode="auto"><span class="t"><b>อัตโนมัติ</b><small>แตะเพื่อเริ่ม หยุดเองเมื่อคุณหยุดพูด · หรือกดค้างไว้ระหว่างพูด</small></span><svg class="check" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5l2.7 2.7L11 4.5"/></svg></button>
+      <button role="option" data-talk-mode="hold"><span class="t"><b>กดค้าง</b><small>ฟังเฉพาะตอนกดค้างไว้ ปล่อยแล้วพิมพ์ให้</small></span><svg class="check" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5l2.7 2.7L11 4.5"/></svg></button>
+      <button role="option" data-talk-mode="toggle"><span class="t"><b>แตะเริ่ม/จบ</b><small>แตะครั้งแรกเริ่มฟัง แตะอีกครั้งเมื่อจบ</small></span><svg class="check" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5l2.7 2.7L11 4.5"/></svg></button>
     </div>
+  </div>
+  <div class="row" id="auto-stop-row">
+    <div class="text"><div class="label">หยุดเองเมื่อเงียบ</div>
+      <div class="hint">นับหลังจากเริ่มพูดแล้ว · แตะปุ่มพูดเพื่อจบก่อนได้เสมอ</div></div>
+    <select class="field" id="auto-stop" aria-label="หยุดเองเมื่อเงียบ">
+      <option value="1">1 วินาที</option>
+      <option value="1.5">1.5 วินาที</option>
+      <option value="2">2 วินาที</option>
+      <option value="3">3 วินาที</option>
+      <option value="5">5 วินาที</option>
+    </select>
   </div>
 </div>
 </section>
@@ -794,14 +825,19 @@
       ? "ตั้ง System Settings › Keyboard › \"Press 🌐 key to\" เป็น Do Nothing และถ้าใช้ Dictation ของ Apple อย่าตั้งปุ่มลัดเป็นกด 🌐 สองครั้ง"
       : "คลิกแล้วกดปุ่มที่ต้องการ: ⌥ ขวา, ⌃ ขวา หรือ fn กดเดี่ยวๆ ได้ (ปุ่มฝั่งซ้ายยังใช้กับปุ่มลัดตามปกติ) · หรือปุ่มลัด เช่น ⌥ + Space, F5 ซึ่งแอปอื่นจะไม่เห็น (ยกเว้นในช่องรหัสผ่าน)";
     document.querySelectorAll("[data-talk-mode]").forEach((btn) =>
-      btn.setAttribute("aria-pressed", String(btn.dataset.talkMode === s.talkMode)));
-    $("talk-mode-hint").textContent = {
-      hold_or_tap: "กดค้าง = พูดแล้วปล่อย · แตะครั้งเดียว = พูดยาว แล้วแตะอีกครั้งเมื่อจบ",
-      hold: "กดค้างไว้ระหว่างพูด ปล่อยแล้วพิมพ์ให้",
-      toggle: "แตะครั้งแรกเริ่มฟัง แตะอีกครั้งเมื่อจบ",
-    }[s.talkMode];
+      btn.setAttribute("aria-selected", String(btn.dataset.talkMode === s.talkMode)));
+    const mode = document.querySelector(`[data-talk-mode="${s.talkMode}"]`);
+    $("talk-mode-name").textContent = mode?.querySelector("b").textContent ?? "";
+    $("talk-mode-hint").textContent = mode?.querySelector("small").textContent ?? "";
+    $("auto-stop-row").classList.toggle("hidden", s.talkMode !== "auto");
+    const stop = String(s.autoStop);
+    $("auto-stop").querySelector("[data-custom]")?.remove();
+    if (![...$("auto-stop").options].some((o) => o.value === stop)) {
+      const o = new Option(`${stop} วินาที`, stop); o.dataset.custom = ""; $("auto-stop").add(o);
+    }
+    $("auto-stop").value = stop;
     $("footer").textContent = {
-      hold_or_tap: `กด ${s.talkKey} ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · ${s.cancelKey} = ยกเลิก`,
+      auto: `แตะ ${s.talkKey} เพื่อพูด หยุดเองเมื่อเงียบ · หรือกดค้างไว้ · ${s.cancelKey} = ยกเลิก`,
       hold: `กด ${s.talkKey} ค้างไว้เพื่อพูด · ${s.cancelKey} = ยกเลิก`,
       toggle: `แตะ ${s.talkKey} เพื่อเริ่มพูด แตะอีกครั้งเมื่อจบ · ${s.cancelKey} = ยกเลิก`,
     }[s.talkMode];
@@ -841,8 +877,42 @@
     i.addEventListener("change", () => send({ cmd: "set", key: i.dataset.set, value: i.checked })));
   document.querySelectorAll("[data-backend]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "backend", value: btn.dataset.backend })));
-  document.querySelectorAll("[data-talk-mode]").forEach((btn) =>
-    btn.addEventListener("click", () => send({ cmd: "talk_mode", value: btn.dataset.talkMode })));
+  {
+    const btn = $("talk-mode-btn"), menu = $("talk-mode-menu");
+    const options = () => [...menu.querySelectorAll("[role=option]")];
+    const close = (focus) => {
+      menu.classList.add("hidden"); btn.setAttribute("aria-expanded", "false");
+      if (focus) btn.focus();
+    };
+    const open = () => {
+      const r = btn.getBoundingClientRect();
+      menu.classList.remove("hidden"); btn.setAttribute("aria-expanded", "true");
+      const below = r.bottom + 6 + menu.offsetHeight <= window.innerHeight - 8;
+      menu.style.top = `${below ? r.bottom + 6 : Math.max(8, r.top - 6 - menu.offsetHeight)}px`;
+      menu.style.left = `${Math.max(8, r.right - menu.offsetWidth)}px`;
+      (options().find((o) => o.getAttribute("aria-selected") === "true") ?? options()[0]).focus();
+    };
+    btn.addEventListener("click", () => (menu.classList.contains("hidden") ? open() : close(true)));
+    options().forEach((o) => o.addEventListener("click", () => {
+      send({ cmd: "talk_mode", value: o.dataset.talkMode });
+      close(true);
+    }));
+    menu.addEventListener("keydown", (e) => {
+      const all = options(), i = all.indexOf(document.activeElement);
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        all[(i + (e.key === "ArrowDown" ? 1 : all.length - 1)) % all.length].focus();
+      } else if (e.key === "Escape" || e.key === "Tab") {
+        e.preventDefault(); e.stopPropagation(); close(true); // Esc closes the menu, not the window
+      }
+    });
+    document.addEventListener("mousedown", (e) => {
+      if (!menu.classList.contains("hidden") && !menu.contains(e.target) && !btn.contains(e.target)) close(false);
+    });
+    window.addEventListener("resize", () => close(false));
+    document.querySelector("main").addEventListener("scroll", () => close(false));
+  }
+  $("auto-stop").addEventListener("change", (e) => send({ cmd: "auto_stop", value: Number(e.target.value) }));
   document.querySelectorAll("[data-pill-position]").forEach((btn) =>
     btn.addEventListener("click", () => send({ cmd: "pill_position", value: btn.dataset.pillPosition })));
   $("talk-capture").addEventListener("click", () => send({ cmd: "talk_capture", value: !state.talkCapturing }));

@@ -39,8 +39,10 @@ pub struct Config {
     /// The key that cancels a dictation (macOS; Windows always uses Esc).
     #[serde(deserialize_with = "lenient")]
     pub cancel_key: crate::hotkey::Chord,
-    /// Hold or tap / hold only / tap to start and stop.
+    /// Hold or tap (stopping on silence) / hold only / tap to start and stop.
     pub talk_mode: TalkMode,
+    /// `TalkMode::Auto`, hands-free: seconds of silence after speech that finish the recording.
+    pub auto_stop_secs: f32,
     /// Put the previous clipboard back after pasting.
     pub restore_clipboard: bool,
     /// Start the app when the user logs in (macOS LaunchAgent / Windows Run key).
@@ -81,7 +83,8 @@ impl Default for Config {
             mixed_english: true,
             talk_key: Binding::DEFAULT,
             cancel_key: Default::default(),
-            talk_mode: TalkMode::HoldOrTap,
+            talk_mode: TalkMode::Auto,
+            auto_stop_secs: DEFAULT_AUTO_STOP_SECS,
             restore_clipboard: true,
             start_at_login: true,
             numbers_as_digits: true,
@@ -96,6 +99,10 @@ impl Default for Config {
         }
     }
 }
+
+/// `auto_stop_secs` unless set: long enough for a Thai speaker's thinking pause (the
+/// segmenter treats 1.2 s as a long pause), short enough not to feel stuck.
+pub const DEFAULT_AUTO_STOP_SECS: f32 = 2.0;
 
 /// The longest wait `unload_after_min` can set.
 const MAX_UNLOAD_MIN: u32 = 24 * 60;

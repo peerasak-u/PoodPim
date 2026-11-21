@@ -167,9 +167,12 @@ impl Default for Binding {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TalkMode {
-    /// Hold to talk, let go to finish; a quick tap starts hands-free, the next tap finishes.
+    /// Hold to talk, let go to finish; a quick tap starts hands-free, which finishes by itself
+    /// once the user stops speaking (`Config::auto_stop_secs`), or at the next tap.
+    /// (Called hold_or_tap, without the stop on silence, before.)
     #[default]
-    HoldOrTap,
+    #[serde(alias = "hold_or_tap")]
+    Auto,
     /// Hold to talk, let go to finish, however short the press.
     Hold,
     /// Every press starts hands-free; the next press finishes.
@@ -495,21 +498,22 @@ mod tests {
         // Mods left out are off.
         let b: Binding = serde_json::from_str(r#"{"type":"chord","code":96,"mods":{}}"#).unwrap();
         assert_eq!(b, Binding::Chord { code: 96, mods: NONE });
-        for m in [TalkMode::HoldOrTap, TalkMode::Hold, TalkMode::Toggle] {
+        for m in [TalkMode::Auto, TalkMode::Hold, TalkMode::Toggle] {
             let s = serde_json::to_string(&m).unwrap();
             assert_eq!(serde_json::from_str::<TalkMode>(&s).unwrap(), m);
         }
-        assert_eq!(serde_json::to_string(&TalkMode::HoldOrTap).unwrap(), "\"hold_or_tap\"");
+        assert_eq!(serde_json::to_string(&TalkMode::Auto).unwrap(), "\"auto\"");
+        assert_eq!(serde_json::from_str::<TalkMode>("\"hold_or_tap\"").unwrap(), TalkMode::Auto);
         // ⌘ and ⇧ are not talk keys.
         assert!(serde_json::from_str::<Binding>(r#"{"type":"modifier","key":"right_command"}"#).is_err());
         assert!(serde_json::from_str::<Binding>(r#"{"type":"modifier","key":"left_shift"}"#).is_err());
     }
 
     #[test]
-    fn old_config_keeps_right_option_hold_or_tap() {
+    fn old_config_keeps_right_option_auto() {
         let c: Config = serde_json::from_str(r#"{"mixed_english":false,"live_typing":true}"#).unwrap();
         assert_eq!(c.talk_key, Binding::DEFAULT);
-        assert_eq!(c.talk_mode, TalkMode::HoldOrTap);
+        assert_eq!(c.talk_mode, TalkMode::Auto);
         assert!(!c.mixed_english);
         let c: Config = serde_json::from_str(r#"{"talk_key":{"type":"modifier","key":"fn"},"talk_mode":"toggle"}"#).unwrap();
         assert_eq!(c.talk_key, Binding::Modifier { key: ModKey::Fn });
