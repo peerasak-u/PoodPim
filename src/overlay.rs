@@ -26,10 +26,10 @@ impl Phase {
     fn label(&self) -> String {
         match self {
             Phase::Hidden => String::new(),
-            Phase::Ready => format!("PoodPim พร้อมแล้ว · กด {} ค้างไว้เพื่อพูด", crate::platform::TALK_KEY_LABEL),
+            Phase::Ready => format!("PoodPim พร้อมแล้ว · กด {} ค้างไว้เพื่อพูด", crate::hotkey::label()),
             Phase::Listening { handsfree: false } => "กำลังฟัง…".into(),
             Phase::Listening { handsfree: true } => {
-                format!("กำลังฟัง… แตะ {} อีกครั้งเพื่อจบ", crate::platform::TALK_KEY_LABEL)
+                format!("กำลังฟัง… แตะ {} อีกครั้งเพื่อจบ", crate::hotkey::label())
             }
             Phase::Working => "กำลังถอดเสียง…".into(),
             Phase::Done => "✓ พิมพ์แล้ว".into(),

@@ -98,6 +98,80 @@
   </div>
 </div>
 
+<!-- Talk key and press mode (src/app/talk.rs) -->
+<style>
+  #talk-card .talk-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #talk-capture[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+</style>
+<h2>ปุ่มพูด</h2>
+<div class="card" id="talk-card">
+  <div class="row stack">
+    <div class="text"><div class="label">ปุ่มที่ใช้พูด</div><div class="hint" id="talk-current"></div></div>
+    <div class="talk-line">
+      <div class="seg" role="group" aria-label="ปุ่มที่ใช้พูด" id="talk-presets"></div>
+      <button class="btn" id="talk-capture">ตั้งปุ่มเอง…</button>
+    </div>
+    <div class="hint hidden" id="talk-fn-hint">ถ้าใช้ fn: ไปที่ System Settings › Keyboard แล้วตั้ง "Press 🌐 key to" เป็น Do Nothing</div>
+  </div>
+  <div class="row">
+    <div class="text"><div class="label">วิธีกด</div><div class="hint" id="talk-mode-hint"></div></div>
+    <div class="seg" role="group" aria-label="วิธีกด">
+      <button data-talk-mode="hold_or_tap">ค้างหรือแตะ</button>
+      <button data-talk-mode="hold">กดค้างเท่านั้น</button>
+      <button data-talk-mode="toggle">แตะเพื่อเริ่ม/หยุด</button>
+    </div>
+  </div>
+  <div class="row">
+    <div class="text"></div>
+    <button class="btn" id="talk-reset">คืนค่าเริ่มต้น</button>
+  </div>
+</div>
+<script>
+  (() => {
+    const talkSend = (action, value) => send({ cmd: "talk", action, value });
+    const modeHints = {
+      hold_or_tap: "กดค้าง = พูดแล้วปล่อย · แตะครั้งเดียว = พูดยาว",
+      hold: "กดค้างไว้ระหว่างพูด ปล่อยแล้วถอดเสียง",
+      toggle: "แตะครั้งแรกเริ่มฟัง แตะอีกครั้งเพื่อจบ",
+    };
+    let capturing = false;
+    document.addEventListener("poodpim:state", (e) => {
+      const s = e.detail, t = s.talk;
+      capturing = t.capturing;
+      document.getElementById("talk-current").textContent = `ตอนนี้: ${s.talkKey}`;
+      const presets = document.getElementById("talk-presets");
+      if (presets.childElementCount !== t.presets.length) {
+        presets.replaceChildren(...t.presets.map((p) => {
+          const b = document.createElement("button");
+          b.textContent = p.label; b.dataset.talkPreset = p.id;
+          b.addEventListener("click", () => talkSend("preset", p.id));
+          return b;
+        }));
+      }
+      presets.querySelectorAll("button").forEach((b) =>
+        b.setAttribute("aria-pressed", String(b.dataset.talkPreset === t.preset)));
+      const cap = document.getElementById("talk-capture");
+      cap.textContent = t.capturing ? "กดปุ่มที่ต้องการ… (Esc = ยกเลิก)" : "ตั้งปุ่มเอง…";
+      cap.setAttribute("aria-pressed", String(t.capturing));
+      document.getElementById("talk-fn-hint").classList.toggle("hidden", !t.fn);
+      document.querySelectorAll("[data-talk-mode]").forEach((b) =>
+        b.setAttribute("aria-pressed", String(b.dataset.talkMode === t.mode)));
+      document.getElementById("talk-mode-hint").textContent = modeHints[t.mode] || "";
+      const k = s.talkKey;
+      document.getElementById("talk-footer").textContent =
+        t.mode === "hold" ? `กด ${k} ค้างไว้เพื่อพูด · Esc = ยกเลิก`
+        : t.mode === "toggle" ? `แตะ ${k} เพื่อเริ่ม แตะอีกครั้งเพื่อจบ · Esc = ยกเลิก`
+        : `กด ${k} ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · Esc = ยกเลิก`;
+    });
+    document.getElementById("talk-capture").addEventListener("click", () => talkSend(capturing ? "cancel" : "capture"));
+    document.getElementById("talk-reset").addEventListener("click", () => talkSend("reset"));
+    document.querySelectorAll("[data-talk-mode]").forEach((b) =>
+      b.addEventListener("click", () => talkSend("mode", b.dataset.talkMode)));
+    // While a key is being recorded, Esc (and ⌘W) belong to the recording, not to the window.
+    document.addEventListener("keydown", (e) => { if (capturing) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  })();
+</script>
+
 <h2>การถอดเสียง</h2>
 <div class="card">
   <div class="row">
@@ -201,7 +275,7 @@
   </div>
 </div>
 
-<footer>กด <span class="talkkey"></span> ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · Esc = ยกเลิก</footer>
+<footer id="talk-footer">กด <span class="talkkey"></span> ค้างไว้เพื่อพูด · แตะครั้งเดียว = พูดยาว · Esc = ยกเลิก</footer>
 <div id="toast" role="status"></div>
 
 <script>
@@ -211,6 +285,7 @@
 
   window.render = (s) => {
     state = s;
+    document.dispatchEvent(new CustomEvent("poodpim:state", { detail: s }));
     $("version").textContent = s.version;
     $("status").innerHTML = "";
     const b = document.createElement("b"); b.textContent = s.status; $("status").append(b);

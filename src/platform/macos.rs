@@ -172,8 +172,6 @@ pub fn foreground_is_elevated() -> bool {
     false
 }
 
-pub const TALK_KEY_LABEL: &str = "Right ⌥";
-
 /// The talk keys offered as one-click choices in Settings.
 pub const TALK_PRESETS: &[(ModKey, &str)] =
     &[(ModKey::RightOption, "⌥ ขวา"), (ModKey::RightCommand, "⌘ ขวา"), (ModKey::RightControl, "⌃ ขวา"), (ModKey::Fn, "fn 🌐")];
@@ -277,7 +275,7 @@ pub fn redirect_stderr(file: std::fs::File) {
 pub const ALREADY_RUNNING: &str = "PoodPim เปิดอยู่แล้ว\n\n\
 ไอคอนไมโครโฟน 🎙 อยู่ที่แถบเมนูด้านบนขวาของจอ ถ้าไม่เห็น อาจถูกรอยบากของจอบังไว้ \
 ลองกด ⌘ ค้างแล้วลากไอคอนอื่นออกจากแถบเมนู หรือดูที่ System Settings › Menu Bar\n\n\
-กด Option ขวาค้างไว้เพื่อพูดได้เลย";
+กดปุ่มพูดค้างไว้เพื่อพูดได้เลย";
 
 /// Starts the app at login with a LaunchAgent pointing at this executable (rewritten on every
 /// start, so it follows the app if it is moved). Only for the bundled app, not dev builds.
