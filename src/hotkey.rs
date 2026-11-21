@@ -5,10 +5,15 @@
 //! The press mode is read in app.rs, so it works on both.
 
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::platform::{self, HotkeyEvent};
+
+/// Another key pressed this soon after the talk modifier went down means the user is typing a
+/// combination (⌥+e, ⌃A), not dictating (macOS only: there the modifier still reaches apps).
+const TYPING_GUARD: Duration = Duration::from_millis(500);
 
 /// A modifier key that can be the talk key on its own. ⌘ and ⇧ can't: they are held for
 /// shortcuts and capitals all the time, so every press would open the microphone (and switch
@@ -71,38 +76,51 @@ pub enum TalkMode {
 pub enum RawKey {
     /// A modifier key that can be the talk key went down or up.
     Mod { key: ModKey, down: bool },
+    /// Any other key went down (not Esc); `repeat`: the OS repeating a key held down.
+    Down { repeat: bool },
 }
 
 pub struct Matcher {
     binding: Binding,
-    /// The talk key is down.
-    held: bool,
+    /// The talk key is down, since then.
+    held: Option<Instant>,
+    /// TalkAborted was already sent for this press.
+    aborted: bool,
 }
 
 impl Matcher {
     pub const fn new(binding: Binding) -> Self {
-        Self { binding, held: false }
+        Self { binding, held: None, aborted: false }
     }
 
     pub fn set_binding(&mut self, b: Binding) {
         self.binding = b;
-        self.held = false;
+        self.held = None;
     }
 
-    pub fn feed(&mut self, k: RawKey) -> Option<HotkeyEvent> {
+    pub fn feed(&mut self, k: RawKey, at: Instant) -> Option<HotkeyEvent> {
         let Binding::Modifier { key: bound } = self.binding;
         match k {
             // macOS never repeats a modifier, so a second "down" means the release was missed
             // (the tap was off for a moment, or a password field hid it): a new press.
             RawKey::Mod { key, down: true } if key == bound => {
-                self.held = true;
+                self.held = Some(at);
+                self.aborted = false;
                 Some(HotkeyEvent::TalkDown)
             }
-            RawKey::Mod { key, down: false } if key == bound && self.held => {
-                self.held = false;
+            RawKey::Mod { key, down: false } if key == bound && self.held.is_some() => {
+                self.held = None;
                 Some(HotkeyEvent::TalkUp)
             }
             RawKey::Mod { .. } => None,
+            RawKey::Down { repeat: false } => match self.held {
+                Some(t) if !self.aborted && at.saturating_duration_since(t) < TYPING_GUARD => {
+                    self.aborted = true;
+                    Some(HotkeyEvent::TalkAborted)
+                }
+                _ => None,
+            },
+            RawKey::Down { repeat: true } => None,
         }
     }
 }
@@ -120,6 +138,17 @@ mod tests {
 
     fn opt(down: bool) -> RawKey {
         RawKey::Mod { key: ModKey::RightOption, down }
+    }
+
+    fn ctrl(down: bool) -> RawKey {
+        RawKey::Mod { key: ModKey::RightControl, down }
+    }
+
+    const KEY: RawKey = RawKey::Down { repeat: false };
+
+    /// Feeds `k` to `m` at `t0 + ms`.
+    fn at(m: &mut Matcher, t0: Instant, ms: u64, k: RawKey) -> Option<HotkeyEvent> {
+        m.feed(k, t0 + Duration::from_millis(ms))
     }
 
     #[test]
@@ -162,29 +191,59 @@ mod tests {
 
     #[test]
     fn modifier_down_up() {
-        let mut m = Matcher::new(Binding::DEFAULT);
-        assert_eq!(m.feed(opt(true)), Some(HotkeyEvent::TalkDown));
-        assert_eq!(m.feed(opt(false)), Some(HotkeyEvent::TalkUp));
-        assert_eq!(m.feed(opt(false)), None);
+        let (mut m, t) = (Matcher::new(Binding::DEFAULT), Instant::now());
+        assert_eq!(at(&mut m, t, 0, opt(true)), Some(HotkeyEvent::TalkDown));
+        assert_eq!(at(&mut m, t, 900, opt(false)), Some(HotkeyEvent::TalkUp));
+        assert_eq!(at(&mut m, t, 950, opt(false)), None);
         // Another key than the bound one.
-        assert_eq!(m.feed(RawKey::Mod { key: ModKey::RightControl, down: true }), None);
-        assert_eq!(m.feed(RawKey::Mod { key: ModKey::RightControl, down: false }), None);
+        assert_eq!(at(&mut m, t, 1000, ctrl(true)), None);
+        assert_eq!(at(&mut m, t, 1100, ctrl(false)), None);
         m.set_binding(Binding::Modifier { key: ModKey::RightControl });
-        assert_eq!(m.feed(RawKey::Mod { key: ModKey::RightControl, down: true }), Some(HotkeyEvent::TalkDown));
-        assert_eq!(m.feed(opt(true)), None);
+        assert_eq!(at(&mut m, t, 1200, ctrl(true)), Some(HotkeyEvent::TalkDown));
+        assert_eq!(at(&mut m, t, 1300, opt(true)), None);
     }
 
     #[test]
     fn missed_release_does_not_eat_the_next_press() {
-        let mut m = Matcher::new(Binding::DEFAULT);
-        assert_eq!(m.feed(opt(true)), Some(HotkeyEvent::TalkDown));
-        // The release never arrived: the next press still starts.
-        assert_eq!(m.feed(opt(true)), Some(HotkeyEvent::TalkDown));
-        assert_eq!(m.feed(opt(false)), Some(HotkeyEvent::TalkUp));
-        // Key changed while held: its release is not a talk event, and the new key works.
-        assert_eq!(m.feed(opt(true)), Some(HotkeyEvent::TalkDown));
+        let (mut m, t) = (Matcher::new(Binding::DEFAULT), Instant::now());
+        assert_eq!(at(&mut m, t, 0, opt(true)), Some(HotkeyEvent::TalkDown));
+        // The release never arrived (tap off for a moment, password field): the next press starts.
+        assert_eq!(at(&mut m, t, 5000, opt(true)), Some(HotkeyEvent::TalkDown));
+        assert_eq!(at(&mut m, t, 6000, opt(false)), Some(HotkeyEvent::TalkUp));
+        // Key changed while held: its release is not a talk event, and the next press works.
+        assert_eq!(at(&mut m, t, 7000, opt(true)), Some(HotkeyEvent::TalkDown));
         m.set_binding(Binding::DEFAULT);
-        assert_eq!(m.feed(opt(false)), None);
-        assert_eq!(m.feed(opt(true)), Some(HotkeyEvent::TalkDown));
+        assert_eq!(at(&mut m, t, 7500, opt(false)), None);
+        assert_eq!(at(&mut m, t, 8000, opt(true)), Some(HotkeyEvent::TalkDown));
+    }
+
+    #[test]
+    fn typing_guard_judges_each_press() {
+        let (mut m, t) = (Matcher::new(Binding::DEFAULT), Instant::now());
+        // ⌥+e typed quickly: one TalkAborted, and the release still comes.
+        at(&mut m, t, 0, opt(true));
+        assert_eq!(at(&mut m, t, 120, KEY), Some(HotkeyEvent::TalkAborted));
+        assert_eq!(at(&mut m, t, 140, KEY), None);
+        assert_eq!(at(&mut m, t, 200, opt(false)), Some(HotkeyEvent::TalkUp));
+        // A key pressed later in a long hold is not typing a combination.
+        at(&mut m, t, 1000, opt(true));
+        assert_eq!(at(&mut m, t, 1600, KEY), None);
+        at(&mut m, t, 2000, opt(false));
+        // Repeats of a key held from before don't count; nor keys while the talk key is up.
+        at(&mut m, t, 3000, opt(true));
+        assert_eq!(at(&mut m, t, 3050, RawKey::Down { repeat: true }), None);
+        at(&mut m, t, 3600, opt(false));
+        assert_eq!(at(&mut m, t, 3650, KEY), None);
+        // Each press is timed from its own start: a press right after a long one still counts.
+        at(&mut m, t, 4000, opt(true));
+        at(&mut m, t, 4350, opt(false));
+        at(&mut m, t, 4450, opt(true));
+        assert_eq!(at(&mut m, t, 4500, KEY), Some(HotkeyEvent::TalkAborted));
+        // A missed release: the new press is timed from itself, not from the stale one.
+        at(&mut m, t, 6000, opt(true));
+        assert_eq!(at(&mut m, t, 6100, KEY), Some(HotkeyEvent::TalkAborted));
+        // After a key change while held, keys don't count until the new key goes down.
+        m.set_binding(Binding::DEFAULT);
+        assert_eq!(at(&mut m, t, 6200, KEY), None);
     }
 }

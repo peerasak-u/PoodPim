@@ -97,6 +97,12 @@ Settings › Keyboard › "Press 🌐 key to" to Do Nothing, and don't give Appl
 (as above), hold only (a short press is a short recording, never hands-free), or tap to start
 and tap again to finish.
 
+On macOS the talk key still reaches other apps, so it is also used in key combinations (⌥E
+for an accent, ⌥← to jump a word). If another key goes down within 0.5 s of pressing the talk
+key, the recording that press started is dropped instead of turning into a hands-free one.
+Keys pressed later in a long hold don't count. (Windows takes Right Alt for itself, so there
+is nothing to drop.)
+
 **Typing while you speak (hands-free):** tap the talk key once and keep talking. Each time
 you pause for about half a second (after at least 3 s of speech) the part you've finished is
 typed straight away, instead of all of it when you tap again. Switch to another window

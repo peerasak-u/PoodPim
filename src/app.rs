@@ -144,6 +144,9 @@ struct App {
     load_gen: u64,
     recorder: Recorder,
     pressed_at: Instant,
+    /// The talk key is (or was last) pressed to start this recording, not to carry it on or
+    /// finish it: only such a press may drop it (HotkeyEvent::TalkAborted).
+    press_started: bool,
     /// The talk key was let go: finish the recording at this time (see TAIL).
     stop_at: Option<Instant>,
     handsfree: bool,
@@ -302,6 +305,7 @@ pub fn run() -> Result<()> {
         load_gen: 0,
         recorder: Recorder::new(),
         pressed_at: Instant::now(),
+        press_started: false,
         stop_at: None,
         handsfree: false,
         last_text: String::new(),
@@ -1200,6 +1204,7 @@ impl App {
     fn on_hotkey(&mut self, h: HotkeyEvent, at: Instant) {
         match h {
             HotkeyEvent::TalkDown => {
+                self.press_started = false;
                 // Not set up yet: ask for what's missing instead of recording.
                 if !self.busy() {
                     if self.cfg.backend == Backend::Lambda
@@ -1231,6 +1236,7 @@ impl App {
                             // a second or more (Windows, Bluetooth headsets), and timing from here
                             // turned short holds into taps (hands-free mode).
                             self.pressed_at = at;
+                            self.press_started = true;
                             eprintln!("microphone started in {} ms", started.elapsed().as_millis());
                             self.state = State::Recording;
                             self.status_text = "Listening…".into();
@@ -1260,18 +1266,17 @@ impl App {
                     }
                 }
             }
+            HotkeyEvent::TalkAborted => {
+                if self.state == State::Recording && self.press_started {
+                    eprintln!("talk key was part of a key combination: recording dropped");
+                    self.drop_recording();
+                    self.status_text = self.ready_text();
+                    self.overlay.set(Phase::Hidden);
+                }
+            }
             HotkeyEvent::Escape => {
                 if self.state == State::Recording {
-                    self.stop_at = None;
-                    self.recorder.stop_raw();
-                    self.segmenter = None;
-                    if let Some(p) = self.pipeline.take() {
-                        p.cancel();
-                    }
-                    self.rec_gen += 1;
-                    self.end_live(); // what was typed already stays
-                    self.handsfree = false;
-                    self.state = State::Idle;
+                    self.drop_recording();
                     self.status_text = "Cancelled".into();
                     self.overlay.set(Phase::Cancelled);
                 }
@@ -1285,6 +1290,21 @@ impl App {
                 self.needs_permission = false;
             }
         }
+    }
+
+    /// Stops the recording and throws it away (Esc, or the talk key was part of a combination).
+    fn drop_recording(&mut self) {
+        self.stop_at = None;
+        self.recorder.stop_raw();
+        self.segmenter = None;
+        if let Some(p) = self.pipeline.take() {
+            p.cancel();
+        }
+        self.rec_gen += 1;
+        self.end_live(); // what was typed already stays
+        self.handsfree = false;
+        self.press_started = false;
+        self.state = State::Idle;
     }
 
     /// Keeps recording after the key is let go, until the next press (a tap, or "tap to start").
