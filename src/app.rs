@@ -133,6 +133,8 @@ struct Ui {
     /// Whether `permission` / `download` are in the menu now (only while they are needed).
     shown_permission: std::cell::Cell<bool>,
     shown_download: std::cell::Cell<bool>,
+    /// The state the tray icon and menu were last drawn for.
+    shown_state: std::cell::Cell<Option<State>>,
 }
 
 mod post;
@@ -494,6 +496,12 @@ pub fn run() -> Result<()> {
             app.settings_close = false;
             app.close_settings(target);
         }
+        // A change made on a timer (the talk key's release delay) comes with no event to redraw on.
+        if let Some(ui) = &ui
+            && ui.shown_state.get() != Some(app.state)
+        {
+            app.refresh(ui);
+        }
         app.show_settings_state();
         if app.quit {
             *control_flow = ControlFlow::Exit;
@@ -554,6 +562,7 @@ fn build_ui() -> Ui {
         quit,
         shown_permission: Default::default(),
         shown_download: Default::default(),
+        shown_state: Default::default(),
     }
 }
 
@@ -1987,11 +1996,13 @@ impl App {
             self.recent_dirty = false;
             self.rebuild_recent(&ui.recent);
         }
-        let (icon, template) = icon_for(self.state);
-        #[cfg(target_os = "macos")]
-        let _ = if template { ui.tray.set_icon_templated(Some(icon)) } else { ui.tray.set_icon(Some(icon)) };
-        #[cfg(not(target_os = "macos"))]
-        let _ = (template, ui.tray.set_icon(Some(icon)));
+        if ui.shown_state.replace(Some(self.state)) != Some(self.state) {
+            let (icon, template) = icon_for(self.state);
+            #[cfg(target_os = "macos")]
+            let _ = if template { ui.tray.set_icon_templated(Some(icon)) } else { ui.tray.set_icon(Some(icon)) };
+            #[cfg(not(target_os = "macos"))]
+            let _ = (template, ui.tray.set_icon(Some(icon)));
+        }
     }
 }
 
