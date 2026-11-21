@@ -68,6 +68,8 @@ on Windows also Settings › Apps › PoodPim.
 |---|---|---|
 | Talk | hold **Right ⌥** | hold **Right Alt** |
 | Hands-free, typed as you speak | tap Right ⌥, tap again to finish | tap Right Alt, tap again |
+| Change the talk key | Settings › ปุ่มพูด: Right ⌥ / ⌘ / ⌃, fn, or record any key with ⌃ ⌥ ⌘ (or an F-key) | Settings › ปุ่มพูด: Right Alt / Ctrl, or record any key with Ctrl / Alt / Win (or an F-key) |
+| Press mode | Settings › ปุ่มพูด: hold or tap (default), hold only, or tap to start / tap to finish | same |
 | Cancel | Esc | Esc |
 | Paste | ⌘V (clipboard restored after) | Ctrl+V (clipboard restored after) |
 

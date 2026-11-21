@@ -25,13 +25,13 @@ use crate::config::{Backend, Config};
 use crate::features::SAMPLE_RATE;
 use crate::pipeline::{Outcome, Pipeline};
 use crate::overlay::{Overlay, Phase};
-use crate::platform::{self, HotkeyEvent, TALK_KEY_LABEL};
+use crate::platform::{self, HotkeyEvent};
 use crate::segment::Segmenter;
 use crate::corrections::{self, Corrections};
 use crate::hotwords::{self, Hotwords};
+use crate::hotkey::{self, Release};
 use crate::{inserter, model, update};
 
-const TAP: Duration = Duration::from_millis(300);
 /// Safety cap on one recording; it is finished automatically after this.
 const MAX_RECORDING: Duration = Duration::from_secs(10 * 60);
 /// How often the recording is checked for a finished segment (sooner = typed sooner while
@@ -55,6 +55,8 @@ const ASSUME_WARM: Duration = Duration::from_secs(180);
 /// First update check after launch, then one a day.
 const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(20);
 const UPDATE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+
+mod talk;
 
 enum UserEvent {
     /// A key event and when it happened (stamped on the keyboard thread: the event loop may be
@@ -129,6 +131,9 @@ struct Ui {
     /// Whether `permission` / `download` are in the menu now (only while they are needed).
     shown_permission: std::cell::Cell<bool>,
     shown_download: std::cell::Cell<bool>,
+    /// How to use the talk key (follows the key and press mode set in Settings).
+    hint: MenuItem,
+    shown_hint: std::cell::RefCell<String>,
 }
 
 mod post;
@@ -193,6 +198,8 @@ struct App {
     dialog_open: bool,
     /// The OS hasn't let us watch the keyboard yet (macOS Accessibility).
     needs_permission: bool,
+    /// Settings is recording a new talk key (see talk.rs).
+    capturing: bool,
     /// The server answered 401: the key in the config is wrong.
     key_rejected: bool,
     overlay: Overlay,
@@ -336,6 +343,7 @@ pub fn run() -> Result<()> {
         last_server_ok: None,
         dialog_open: false,
         needs_permission: false,
+        capturing: false,
         key_rejected: false,
         overlay: Overlay::new(),
         last_poll: Instant::now(),
@@ -380,7 +388,8 @@ pub fn run() -> Result<()> {
         let animating = app.overlay.tick();
         match event {
             Event::NewEvents(StartCause::Init) => {
-                ui = Some(build_ui());
+                hotkey::lock().set_binding(app.cfg.talk_key.usable());
+                ui = Some(build_ui(app.cfg.talk_mode));
                 let p = proxy.clone();
                 platform::spawn_hotkey_listener(Box::new(move |e| {
                     let _ = p.send_event(UserEvent::Hotkey(e, Instant::now()));
@@ -488,7 +497,7 @@ pub fn run() -> Result<()> {
     })
 }
 
-fn build_ui() -> Ui {
+fn build_ui(mode: hotkey::TalkMode) -> Ui {
     let status = MenuItem::new("Loading…", false, None);
     let permission = MenuItem::new("⚠ Open Accessibility settings…", true, None);
     let paste_last = MenuItem::new("Paste last transcript", false, None);
@@ -496,7 +505,8 @@ fn build_ui() -> Ui {
     let add_correction = MenuItem::new("Add correction…", true, None);
     let settings = MenuItem::new("Settings…", true, None);
     let download = MenuItem::new("Download model (1 GB)", true, None);
-    let hint = MenuItem::new(format!("Hold {TALK_KEY_LABEL} to talk · tap = hands-free · Esc = cancel"), false, None);
+    let hint_text = talk::menu_hint(mode);
+    let hint = MenuItem::new(&hint_text, false, None);
     let quit = MenuItem::new("Quit PoodPim", true, None);
     let menu = Menu::new();
     let seps: Vec<PredefinedMenuItem> = (0..3).map(|_| PredefinedMenuItem::separator()).collect();
@@ -526,6 +536,8 @@ fn build_ui() -> Ui {
         quit,
         shown_permission: Default::default(),
         shown_download: Default::default(),
+        hint,
+        shown_hint: hint_text.into(),
     }
 }
 
@@ -557,12 +569,12 @@ impl App {
                 self.waking = None;
                 if self.cfg.server().url.is_empty() {
                     self.state = State::NeedsServer;
-                    self.status_text = format!("Enter the API URL && key: press {TALK_KEY_LABEL}");
+                    self.status_text = format!("Enter the API URL && key: press {}", hotkey::label());
                     return;
                 }
                 if self.cfg.server().api_key.is_empty() {
                     self.state = State::NeedsServer;
-                    self.status_text = format!("Enter the API key: press {TALK_KEY_LABEL}");
+                    self.status_text = format!("Enter the API key: press {}", hotkey::label());
                     return;
                 }
                 self.state = State::Idle;
@@ -770,7 +782,7 @@ impl App {
                         self.key_rejected = e.contains("401");
                         if !self.busy() {
                             self.status_text = if self.key_rejected {
-                                format!("API key was rejected: press {TALK_KEY_LABEL} to enter it")
+                                format!("API key was rejected: press {} to enter it", hotkey::label())
                             } else {
                                 format!("Server error: {}", e.chars().take(70).collect::<String>())
                             };
@@ -1220,6 +1232,9 @@ impl App {
                             eprintln!("listening");
                             self.overlay.set(Phase::Listening { handsfree: false });
                             self.start_pipeline();
+                            if hotkey::starts_handsfree(self.cfg.talk_mode) {
+                                self.go_handsfree();
+                            }
                         }
                         Err(e) => {
                             eprintln!("microphone: {e:#}");
@@ -1233,17 +1248,10 @@ impl App {
                 if self.state == State::Recording && !self.handsfree {
                     let held = at.saturating_duration_since(self.pressed_at);
                     eprintln!("talk key held {} ms", held.as_millis());
-                    if held < TAP {
-                        self.handsfree = true;
-                        if self.cfg.live_typing
-                            && let Some(seg) = self.segmenter.as_mut()
-                        {
-                            seg.set_live(); // shorter parts, so text appears sooner
-                        }
-                        self.status_text = format!("Listening… (tap {TALK_KEY_LABEL} to finish)");
-                        self.overlay.set(Phase::Listening { handsfree: true });
-                    } else {
-                        self.stop_at = Some(at + TAIL);
+                    match hotkey::on_release(self.cfg.talk_mode, held) {
+                        Release::Handsfree => self.go_handsfree(),
+                        Release::Stop => self.stop_at = Some(at + TAIL),
+                        Release::Ignore => {}
                     }
                 }
             }
@@ -1252,26 +1260,29 @@ impl App {
                     self.cancel_polish();
                 }
                 if self.state == State::Recording {
-                    self.stop_at = None;
-                    self.recorder.stop_raw();
-                    self.segmenter = None;
-                    if let Some(p) = self.pipeline.take() {
-                        p.cancel();
-                    }
-                    self.rec_gen += 1;
-                    self.end_live(); // what was typed already stays
-                    self.handsfree = false;
-                    self.state = State::Idle;
+                    self.drop_recording();
                     self.status_text = "Cancelled".into();
                     self.overlay.set(Phase::Cancelled);
                 }
             }
+            HotkeyEvent::TalkAborted => {
+                // Only a recording this press started (not one it carried on or finished).
+                if self.state == State::Recording && at.saturating_duration_since(self.pressed_at) < talk::ABORT_WITHIN {
+                    eprintln!("talk key was part of a key combination: recording dropped");
+                    self.drop_recording();
+                    self.status_text = self.ready_text();
+                    self.overlay.set(Phase::Hidden);
+                }
+            }
+            HotkeyEvent::Captured(b) => self.talk_key_captured(b),
+            HotkeyEvent::CaptureRejected(r) => self.settings_toast(talk::reject_message(r)),
+            HotkeyEvent::CaptureCancelled => self.capturing = false,
             HotkeyEvent::PermissionMissing => {
                 eprintln!("Cannot watch the keyboard yet: grant Accessibility permission");
                 self.needs_permission = true;
             }
             HotkeyEvent::Ready => {
-                eprintln!("watching the {TALK_KEY_LABEL} key");
+                eprintln!("watching the {} key", hotkey::label());
                 self.needs_permission = false;
             }
         }
@@ -1467,7 +1478,7 @@ impl App {
         }
         let (done, sent) = pipe.progress();
         if sent > 0 {
-            let hint = if self.handsfree { format!(" · tap {TALK_KEY_LABEL} to finish") } else { String::new() };
+            let hint = if self.handsfree { format!(" · tap {} to finish", hotkey::label()) } else { String::new() };
             self.status_text = format!("Listening… {done}/{sent} parts transcribed{hint}");
         }
         self.show_heard(); // a part may have finished since (unchanged text costs nothing)
@@ -1578,6 +1589,7 @@ impl App {
     }
 
     fn close_settings(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+        self.cancel_capture();
         self.settings = None;
         #[cfg(target_os = "macos")]
         {
@@ -1605,7 +1617,8 @@ impl App {
             "autostart": self.cfg.start_at_login,
             "vocabCount": self.vocab_count,
             "correctionsCount": self.corrections_count,
-            "talkKey": TALK_KEY_LABEL,
+            "talkKey": hotkey::label(),
+            "talk": self.talk_state(),
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
             "needsPermission": self.needs_permission,
             "updates": update::supported(),
@@ -1729,6 +1742,7 @@ impl App {
                     Err(e) => self.settings_toast(&format!("บันทึกไม่ได้: {e}")),
                 }
             }
+            "talk" => self.talk_message(&v),
             "download" => self.start_download(),
             "update" => self.check_update(),
             "uninstall" => self.ask_uninstall(),
@@ -1766,6 +1780,7 @@ impl App {
         } else {
             ui.status.set_text(&self.status_text);
         }
+        self.refresh_hint(ui);
         let need_download = self.cfg.backend == Backend::Local
             && matches!(self.state, State::NeedsModel | State::Error)
             && !model::is_ready(&model::model_dir());

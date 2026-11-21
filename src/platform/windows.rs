@@ -1,19 +1,23 @@
-//! Windows: low-level keyboard hook for Right Alt / Esc, SendInput for Ctrl+V.
+//! Windows: low-level keyboard hook feeding the talk-key matcher (hotkey.rs), SendInput for Ctrl+V.
 //!
-//! Right Alt is taken over: the hook handles it and does not pass it on. Windows opens the
-//! focused app's menu (Office shows its KeyTips) whenever Alt is pressed and released on
-//! its own, which is exactly how the talk key is used, so letting it through set off menus
-//! everywhere. On layouts where Right Alt is AltGr, Windows sends a fake Left Ctrl with it;
-//! that is swallowed too. Left Alt is untouched.
+//! With Right Alt as the talk key (the default), it is taken over: the hook handles it and does
+//! not pass it on. Windows opens the focused app's menu (Office shows its KeyTips) whenever Alt
+//! is pressed and released on its own, which is exactly how the talk key is used, so letting it
+//! through set off menus everywhere. On layouts where Right Alt is AltGr, Windows sends a fake
+//! Left Ctrl with it; that is swallowed too. Left Alt is untouched.
+//!
+//! Any other Alt or Win key as the talk key, and chords with Alt or Win, are passed on with an
+//! unused key sent in between (MASK_KEY), so their release doesn't open a menu or Start.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::time::Instant;
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL,
-    VK_ESCAPE, VK_LCONTROL, VK_RMENU,
+    VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, SetWindowsHookExW, WH_KEYBOARD_LL,
@@ -21,12 +25,41 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{HotkeyEvent, HotkeySink};
+use crate::hotkey::{self, Binding, KeyClass, ModKey, Mods, RawKey};
 
 static SINK: OnceLock<HotkeySink> = OnceLock::new();
-static TALK_DOWN: AtomicBool = AtomicBool::new(false);
+/// Modifier keys down now (bits from `mod_key`), kept here because a swallowed key never
+/// reaches the system's key state.
+static MODS_DOWN: AtomicU8 = AtomicU8::new(0);
+/// The last key that went down and is still down: the hook doesn't say whether a key-down is
+/// an auto-repeat.
+static LAST_DOWN: AtomicU32 = AtomicU32::new(0);
 const VK_V: VIRTUAL_KEY = VIRTUAL_KEY(0x56);
+/// An unassigned key code, sent so that an Alt or Win press doesn't count as "on its own".
+const MASK_KEY: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
 /// Scan code of the Left Ctrl that Windows makes up in front of AltGr.
 const ALTGR_FAKE_CTRL_SCAN: u32 = 0x21D;
+
+/// A modifier's VK code → the key and its bit in MODS_DOWN.
+fn mod_key(vk: u32) -> Option<(ModKey, u8)> {
+    let k = VIRTUAL_KEY(vk as u16);
+    Some(match k {
+        VK_LCONTROL => (ModKey::LeftControl, 1),
+        VK_RCONTROL => (ModKey::RightControl, 2),
+        VK_LMENU => (ModKey::LeftOption, 4),
+        VK_RMENU => (ModKey::RightOption, 8),
+        VK_LSHIFT => (ModKey::LeftShift, 16),
+        VK_RSHIFT => (ModKey::RightShift, 32),
+        VK_LWIN => (ModKey::LeftCommand, 64),
+        VK_RWIN => (ModKey::RightCommand, 128),
+        _ => return None,
+    })
+}
+
+fn mods_down() -> Mods {
+    let m = MODS_DOWN.load(Ordering::SeqCst);
+    Mods { control: m & 3 != 0, option: m & 12 != 0, shift: m & 48 != 0, command: m & 192 != 0 }
+}
 
 pub fn spawn_hotkey_listener(sink: HotkeySink) {
     if SINK.set(sink).is_err() {
@@ -57,24 +90,67 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let msg = wparam.0 as u32;
         let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
-        if let (false, Some(sink)) = (injected, SINK.get()) {
-            if kb.vkCode == VK_RMENU.0 as u32 {
-                if is_down && !TALK_DOWN.swap(true, Ordering::SeqCst) {
-                    sink(HotkeyEvent::TalkDown);
-                } else if is_up && TALK_DOWN.swap(false, Ordering::SeqCst) {
-                    sink(HotkeyEvent::TalkUp);
-                }
-                return LRESULT(1); // swallowed, auto-repeats included: no app sees Right Alt
+        if let (false, true, Some(sink)) = (injected, is_down || is_up, SINK.get()) {
+            let (event, swallow) = on_key(kb.vkCode, kb.scanCode, is_down);
+            if let Some(e) = event {
+                sink(e);
             }
-            if kb.vkCode == VK_LCONTROL.0 as u32 && kb.scanCode == ALTGR_FAKE_CTRL_SCAN {
+            if swallow {
                 return LRESULT(1);
-            }
-            if kb.vkCode == VK_ESCAPE.0 as u32 && is_down {
-                sink(HotkeyEvent::Escape);
             }
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// One key from the hook: the event for the app, and whether to keep the key from apps.
+fn on_key(vk: u32, scan: u32, down: bool) -> (Option<HotkeyEvent>, bool) {
+    let mut m = hotkey::lock();
+    let capturing = m.capturing();
+    let binding = m.binding();
+    // Today's Right Alt handling, unchanged: swallowed, auto-repeats included, with AltGr's fake Ctrl.
+    let right_alt_talk = binding == Binding::DEFAULT && !capturing;
+    if vk == VK_LCONTROL.0 as u32 && scan == ALTGR_FAKE_CTRL_SCAN {
+        // Part of AltGr (Right Alt), not a key of its own.
+        return (None, right_alt_talk || capturing);
+    }
+    let raw = if let Some((key, bit)) = mod_key(vk) {
+        if down {
+            MODS_DOWN.fetch_or(bit, Ordering::SeqCst);
+        } else {
+            MODS_DOWN.fetch_and(!bit, Ordering::SeqCst);
+        }
+        RawKey::Mod { key, down }
+    } else if down {
+        let repeat = LAST_DOWN.swap(vk, Ordering::SeqCst) == vk;
+        RawKey::Down { code: vk as u16, mods: mods_down(), repeat }
+    } else {
+        let _ = LAST_DOWN.compare_exchange(vk, 0, Ordering::SeqCst, Ordering::SeqCst);
+        RawKey::Up { code: vk as u16 }
+    };
+    let verdict = m.feed(raw, Instant::now(), key_class(vk as u16));
+    drop(m);
+    if right_alt_talk && vk == VK_RMENU.0 as u32 {
+        return (verdict.event, true);
+    }
+    match (verdict.event, binding) {
+        // A chord with Alt or Win: the app sees that modifier pressed and released, with the
+        // swallowed key in between, so put a key there.
+        (Some(HotkeyEvent::TalkDown), Binding::Chord { mods, .. }) if mods.option || mods.command => {
+            send_keys(&[(MASK_KEY, true), (MASK_KEY, false)]);
+        }
+        // Left Alt / a Win key as the talk key: hold back its release and send it after a mask key.
+        (Some(HotkeyEvent::TalkUp), Binding::Modifier { key }) if alt_or_win(key) => {
+            send_keys(&[(MASK_KEY, true), (MASK_KEY, false), (VIRTUAL_KEY(vk as u16), false)]);
+            return (verdict.event, true);
+        }
+        _ => {}
+    }
+    (verdict.event, verdict.swallow)
+}
+
+fn alt_or_win(k: ModKey) -> bool {
+    matches!(k, ModKey::LeftOption | ModKey::RightOption | ModKey::LeftCommand | ModKey::RightCommand)
 }
 
 fn send_keys(keys: &[(VIRTUAL_KEY, bool)]) {
@@ -160,7 +236,83 @@ pub fn accessibility_trusted(_prompt: bool) -> bool {
     true
 }
 
-pub const TALK_KEY_LABEL: &str = "Right Alt";
+/// The talk keys offered as one-click choices in Settings.
+pub const TALK_PRESETS: &[(ModKey, &str)] = &[(ModKey::RightOption, "Alt ขวา"), (ModKey::RightControl, "Ctrl ขวา")];
+
+pub fn mod_label(k: ModKey) -> &'static str {
+    match k {
+        ModKey::LeftControl => "Left Ctrl",
+        ModKey::RightControl => "Right Ctrl",
+        ModKey::LeftOption => "Left Alt",
+        ModKey::RightOption => "Right Alt",
+        ModKey::LeftShift => "Left Shift",
+        ModKey::RightShift => "Right Shift",
+        ModKey::LeftCommand => "Left Win",
+        ModKey::RightCommand => "Right Win",
+        ModKey::Fn => "Fn",
+    }
+}
+
+pub fn key_class(code: u16) -> KeyClass {
+    match code {
+        0x1B => KeyClass::Escape,
+        // F1–F24, Pause, Print Screen, Help, Menu, Sleep, Scroll Lock, browser / media / launch keys.
+        0x70..=0x87 | 0x13 | 0x2C | 0x2F | 0x5D | 0x5F | 0x91 | 0xA6..=0xB7 => KeyClass::Function,
+        _ => KeyClass::Other,
+    }
+}
+
+/// A key's name for labels (US layout), e.g. "Space", "F5", "K".
+pub fn key_name(code: u16) -> String {
+    let named = match code {
+        0x41..=0x5A | 0x30..=0x39 => return char::from(code as u8).to_string(),
+        0x70..=0x87 => return format!("F{}", code - 0x6F),
+        0x60..=0x69 => return format!("Num {}", code - 0x60),
+        0x08 => "Backspace",
+        0x09 => "Tab",
+        0x0D => "Enter",
+        0x13 => "Pause",
+        0x1B => "Esc",
+        0x20 => "Space",
+        0x21 => "Page Up",
+        0x22 => "Page Down",
+        0x23 => "End",
+        0x24 => "Home",
+        0x25 => "←",
+        0x26 => "↑",
+        0x27 => "→",
+        0x28 => "↓",
+        0x2C => "Print Screen",
+        0x2D => "Insert",
+        0x2E => "Delete",
+        0x5D => "Menu",
+        0x6A => "Num *",
+        0x6B => "Num +",
+        0x6D => "Num -",
+        0x6E => "Num .",
+        0x6F => "Num /",
+        0x91 => "Scroll Lock",
+        0xAD => "Mute",
+        0xAE => "Volume Down",
+        0xAF => "Volume Up",
+        0xB0 => "Next Track",
+        0xB1 => "Previous Track",
+        0xB3 => "Play/Pause",
+        0xBA => ";",
+        0xBB => "=",
+        0xBC => ",",
+        0xBD => "-",
+        0xBE => ".",
+        0xBF => "/",
+        0xC0 => "`",
+        0xDB => "[",
+        0xDC => "\\",
+        0xDD => "]",
+        0xDE => "'",
+        _ => return format!("Key {code}"),
+    };
+    named.to_string()
+}
 
 /// Starts the app at login: a value in HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run
 /// pointing at this exe (rewritten on every start, so it follows the app if it is moved).
@@ -229,7 +381,7 @@ pub fn redirect_stderr(file: std::fs::File) {
 
 /// Shown when PoodPim is opened while it is already running.
 pub const ALREADY_RUNNING: &str = "PoodPim เปิดอยู่แล้ว\n\nไอคอนไมโครโฟนอยู่ที่มุมขวาล่างของจอ (ข้างนาฬิกา) \
-ถ้าไม่เห็น ให้กดลูกศร ^ ข้างนาฬิกา\n\nกด Alt ขวาค้างไว้เพื่อพูดได้เลย";
+ถ้าไม่เห็น ให้กดลูกศร ^ ข้างนาฬิกา\n\nกดปุ่มพูดค้างไว้เพื่อพูดได้เลย";
 
 /// A message box with an OK button. Returns when it is closed.
 pub fn alert(message: &str) {
