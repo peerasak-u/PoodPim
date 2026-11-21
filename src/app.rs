@@ -97,6 +97,10 @@ enum UserEvent {
     ModelUpgradeAnswer(bool),
     ModelUpgradeProgress(u64, u64),
     ModelUpgradeDone(Result<(), String>),
+    /// The language model's clean-up of the text to paste: (generation, original, reply).
+    Polished(u64, String, Result<String, String>),
+    /// Settings › ทดสอบ: how long the sample took, or why it failed.
+    PolishTested(Result<u128, String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -219,6 +223,8 @@ struct App {
     remove_fp32_after_load: bool,
     /// Fetching the int8 decoder was started this session (tried again at the next launch).
     decoder_int8_started: bool,
+    /// The text to paste is with the language model (see post.rs); Esc drops it.
+    polishing: bool,
 }
 
 /// Locks a file in the settings folder; None if another copy of the app holds it.
@@ -347,6 +353,7 @@ pub fn run() -> Result<()> {
         model_swap_pending: false,
         remove_fp32_after_load: false,
         decoder_int8_started: false,
+        polishing: false,
     };
     app.reload_vocabulary();
     let mut ui: Option<Ui> = None;
@@ -827,28 +834,26 @@ impl App {
                 let text = crate::pipeline::join_parts(&typed.iter().chain([&rest]).collect::<Vec<_>>());
                 if !text.is_empty() {
                     eprintln!("{:.1}s in {} segment(s), {} typed live: {}", out.audio_s, out.segments, typed.len(), said(&text));
-                    self.last_text = text.clone();
-                    self.recent.push_front(text.clone());
-                    self.recent.truncate(RECENT);
-                    self.recent_dirty = true;
-                    let phase = match typer {
-                        Some(_) if rest.is_empty() => Phase::Done,
-                        Some((typer, window)) if platform::focused_window() == window && !platform::foreground_is_elevated() => {
-                            typer.type_text(continuation(&typed, &rest));
-                            Phase::Done
-                        }
-                        Some((typer, _)) => {
-                            eprintln!("the focused window changed while typing: copied the rest");
-                            typer.finish();
-                            match inserter::copy_text(&rest) {
-                                Ok(()) => Phase::Copied,
-                                Err(e) => {
-                                    eprintln!("copy error: {e:#}");
-                                    Phase::Failed
-                                }
+                    let Some((typer, window)) = typer else {
+                        self.polish_or_deliver(text);
+                        return;
+                    };
+                    self.remember(&text);
+                    let phase = if rest.is_empty() {
+                        Phase::Done
+                    } else if platform::focused_window() == window && !platform::foreground_is_elevated() {
+                        typer.type_text(continuation(&typed, &rest));
+                        Phase::Done
+                    } else {
+                        eprintln!("the focused window changed while typing: copied the rest");
+                        typer.finish();
+                        match inserter::copy_text(&rest) {
+                            Ok(()) => Phase::Copied,
+                            Err(e) => {
+                                eprintln!("copy error: {e:#}");
+                                Phase::Failed
                             }
                         }
-                        None => self.paste(rest),
                     };
                     self.overlay.set(phase);
                 } else if !out.errors.is_empty() {
@@ -993,6 +998,8 @@ impl App {
             },
             UserEvent::Menu(_) => {}
             UserEvent::Settings(msg) => self.settings_message(&msg),
+            UserEvent::Polished(generation, original, r) => self.on_polished(generation, original, r),
+            UserEvent::PolishTested(r) => self.on_polish_tested(r),
         }
     }
 
@@ -1238,6 +1245,9 @@ impl App {
                 }
             }
             HotkeyEvent::Escape => {
+                if self.polishing {
+                    self.cancel_polish();
+                }
                 if self.state == State::Recording {
                     self.stop_at = None;
                     self.recorder.stop_raw();

@@ -174,15 +174,60 @@
       <div class="hint">เอ่อ อืม um uh จะไม่ถูกพิมพ์</div></div>
     <label class="switch"><input type="checkbox" id="post-fillers"><span></span></label>
   </div>
+  <div class="row">
+    <div class="text"><div class="label">ขัดเกลาด้วย AI</div>
+      <div class="hint">ส่งข้อความ (ไม่ใช่เสียง) ไปให้โมเดลภาษาแก้คำผิดก่อนวาง · ใช้กับการกดค้างพูด และการพูดยาวเมื่อปิด "พิมพ์ระหว่างพูด"</div></div>
+    <label class="switch"><input type="checkbox" id="post-polish"><span></span></label>
+  </div>
+  <div class="row stack hidden" id="post-fields">
+    <div class="grid">
+      <label for="post-url">API URL</label>
+      <input class="field" id="post-url" placeholder="http://127.0.0.1:4994/v1" spellcheck="false" autocomplete="off">
+      <label for="post-model">โมเดล</label>
+      <input class="field" id="post-model" spellcheck="false" autocomplete="off">
+      <label for="post-key">API key</label>
+      <input class="field" id="post-key" type="password" placeholder="เว้นว่างได้ถ้าเป็นเซิร์ฟเวอร์ในเครื่อง" spellcheck="false" autocomplete="off">
+    </div>
+    <label class="hint" for="post-prompt">คำสั่ง (ต้องมี ${output})</label>
+    <textarea class="field" id="post-prompt" rows="5" spellcheck="false"></textarea>
+    <div class="hint" id="post-remote">ถ้า URL ไม่ใช่เครื่องนี้ ข้อความที่พูดจะถูกส่งออกนอกเครื่อง</div>
+    <div class="actions"><button class="btn" id="post-test">ทดสอบ</button><button class="btn primary" id="post-save">บันทึก</button></div>
+  </div>
 </div>
+<style>
+  textarea#post-prompt { font: inherit; font-size: 13px; color: var(--text); background: var(--field); border: 1px solid var(--field-line);
+    border-radius: 7px; padding: 6px 9px; width: 100%; resize: vertical; -webkit-user-select: text; user-select: text; }
+  textarea#post-prompt:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); border-color: var(--accent); }
+</style>
 <script>
   document.addEventListener("poodpim:state", (e) => {
     const p = e.detail.post;
     if (!p) return;
     $("post-fillers").checked = !!p.fillers;
+    $("post-polish").checked = !!p.polish.enabled;
+    $("post-fields").classList.toggle("hidden", !p.polish.enabled);
+    const fill = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+    fill("post-url", p.polish.baseUrl);
+    fill("post-model", p.polish.model);
+    fill("post-prompt", p.polish.prompt);
+    $("post-key").placeholder = p.polish.hasKey ? "เว้นว่าง = ใช้ key เดิม" : "เว้นว่างได้ถ้าเป็นเซิร์ฟเวอร์ในเครื่อง";
   });
   document.getElementById("post-fillers").addEventListener("change", (e) =>
     send({ cmd: "post", key: "fillers", value: e.target.checked }));
+  document.getElementById("post-polish").addEventListener("change", (e) => {
+    $("post-fields").classList.toggle("hidden", !e.target.checked);
+    send({ cmd: "post", key: "polish", value: e.target.checked });
+  });
+  const postSave = () => {
+    if (!$("post-prompt").value.includes("${output}")) { window.toast("คำสั่งต้องมี ${output}"); return false; }
+    send({ cmd: "post", action: "save", baseUrl: $("post-url").value.trim(), model: $("post-model").value.trim(),
+      prompt: $("post-prompt").value, key: $("post-key").value.trim() });
+    $("post-key").value = "";
+    return true;
+  };
+  document.getElementById("post-save").addEventListener("click", postSave);
+  // Tests what is in the fields, so they are saved first.
+  document.getElementById("post-test").addEventListener("click", () => { if (postSave()) send({ cmd: "post", action: "test" }); });
 </script>
 
 <h2>ทั่วไป</h2>

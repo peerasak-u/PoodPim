@@ -30,3 +30,5 @@ pub mod remote;
 pub mod settings;
 #[cfg(feature = "desktop")]
 pub mod update;
+#[cfg(feature = "desktop")]
+pub mod polish;

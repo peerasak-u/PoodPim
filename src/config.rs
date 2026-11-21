@@ -42,6 +42,9 @@ pub struct Config {
     pub model_upgrade_declined: bool,
     /// Drop filler words ("เอ่อ", "อืม", "um") before typing or pasting, see fillers.rs.
     pub remove_fillers: bool,
+    /// Clean up the final text with a language model before pasting, see polish.rs.
+    #[serde(deserialize_with = "lenient")]
+    pub polish: Polish,
 }
 
 impl Default for Config {
@@ -59,8 +62,49 @@ impl Default for Config {
             live_preview: true,
             model_upgrade_declined: false,
             remove_fillers: true,
+            polish: Polish::default(),
         }
     }
+}
+
+/// An OpenAI-compatible chat endpoint that cleans up the text pasted at the end of a recording.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Polish {
+    pub enabled: bool,
+    /// e.g. http://127.0.0.1:4994/v1 (`/chat/completions` is added).
+    pub base_url: String,
+    /// Optional for local servers.
+    pub api_key: String,
+    pub model: String,
+    /// Sent as the one user message, with `${output}` replaced by the text.
+    pub prompt: String,
+    pub timeout_s: u32,
+}
+
+impl Default for Polish {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            prompt: crate::polish::DEFAULT_PROMPT.to_string(),
+            timeout_s: 20,
+        }
+    }
+}
+
+impl Polish {
+    pub fn ready(&self) -> bool {
+        self.enabled && !self.base_url.trim().is_empty() && !self.model.trim().is_empty()
+    }
+}
+
+/// A malformed value falls back to the default instead of failing the whole file.
+fn lenient<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(T::deserialize(v).unwrap_or_default())
 }
 
 pub fn path() -> PathBuf {
