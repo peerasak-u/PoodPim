@@ -123,8 +123,9 @@ only if nothing else was copied meanwhile. On macOS every type on the clipboard 
 app runs as administrator (Windows drops PoodPim's Ctrl+V there), the text is put on the
 clipboard for you to paste, and the overlay says so.
 
-"Free memory when idle" (off by default) frees the local model (~0.75 GB) after 15 minutes
-without dictation. The next press of the talk key records at once and loads the model
+"Free memory when idle" (off by default) frees the local model (~0.75 GB) after a time you
+choose without dictation (right after each dictation, or 2 minutes to 1 hour; 15 minutes for
+configs from before this setting). The next press of the talk key records at once and loads the model
 while you speak (about 1–3 s), so only a short sentence waits a little longer.
 
 The model download (~1 GB, from a fixed revision of the Hugging Face repo) carries on where it
