@@ -1,5 +1,8 @@
 //! A small floating pill near the bottom of the screen that shows what dictation is doing:
-//! listening (bars follow the microphone level), transcribing, done.
+//! listening, transcribing, done. The words sit on top and a waveform runs underneath: bars
+//! mirrored around the centre, where the newest level enters and older ones move outwards, so
+//! each sound spreads from the middle; they shrink and fade towards the edges, under a glow that
+//! follows the voice.
 //!
 //! macOS: a non-activating NSPanel. Windows: a borderless topmost tool window drawn with GDI.
 //! Either way it never takes focus from the app being typed into and ignores the mouse.
@@ -53,7 +56,7 @@ impl Phase {
 
     fn rgb(&self) -> [f64; 3] {
         match self {
-            Phase::Listening { .. } => [1.0, 0.27, 0.23],
+            Phase::Listening { .. } => [1.0, 1.0, 1.0],
             Phase::Working => [1.0, 0.70, 0.25],
             Phase::Done | Phase::Ready => [0.20, 0.84, 0.29],
             Phase::Copied => [1.0, 0.70, 0.25],
@@ -72,6 +75,11 @@ pub struct Overlay {
     since: Instant,
     level: f32,
     shown: f32,
+    /// What the waveform shows, newest first: one entry per bar from the centre outwards.
+    history: [f32; BARS_PER_SIDE + 1],
+    pushed: Instant,
+    /// Bar heights on screen (0..1), easing towards their targets between steps.
+    bars: [f32; BARS],
     view: Option<sys::View>,
 }
 
@@ -109,7 +117,21 @@ use mac as sys;
 #[cfg(windows)]
 use win as sys;
 
-const BARS: usize = 5;
+const BARS_PER_SIDE: usize = 11;
+const BARS: usize = 2 * BARS_PER_SIDE + 1;
+/// How often the waveform moves one bar outwards.
+const STEP: Duration = Duration::from_millis(50);
+
+/// 1 at the centre bar, falling linearly towards the edges.
+fn falloff(bar: usize) -> f32 {
+    1.0 - bar.abs_diff(BARS_PER_SIDE) as f32 / (BARS_PER_SIDE + 1) as f32
+}
+
+/// How opaque bar `bar` is: the edges fade down to faint dots.
+fn bar_alpha(bar: usize) -> f64 {
+    let f = falloff(bar) as f64;
+    0.2 + 0.8 * f * f
+}
 
 impl Default for Overlay {
     fn default() -> Self {
@@ -126,6 +148,9 @@ impl Overlay {
             since: Instant::now(),
             level: 0.0,
             shown: 0.0,
+            history: [0.0; BARS_PER_SIDE + 1],
+            pushed: Instant::now(),
+            bars: [0.0; BARS],
             view: None,
         }
     }
@@ -141,6 +166,10 @@ impl Overlay {
     pub fn set(&mut self, phase: Phase) {
         if phase == self.phase {
             return;
+        }
+        if self.phase == Phase::Hidden {
+            self.history = [0.0; BARS_PER_SIDE + 1];
+            self.bars = [0.0; BARS];
         }
         self.phase = phase;
         self.preview.clear();
@@ -199,22 +228,27 @@ impl Overlay {
         // Fast attack, slower release, like a VU meter.
         let k = if self.level > self.shown { 0.6 } else { 0.2 };
         self.shown += (self.level - self.shown) * k;
-        let t = self.since.elapsed().as_secs_f32();
-        let mut heights = [0.0f32; BARS];
-        for (i, h) in heights.iter_mut().enumerate() {
-            let fi = i as f32;
-            *h = match self.phase {
-                Phase::Listening { .. } => {
-                    const SHAPE: [f32; BARS] = [0.55, 0.8, 1.0, 0.8, 0.55];
-                    let wobble = 0.75 + 0.25 * (t * 9.0 + fi * 1.3).sin();
-                    0.12 + 0.88 * self.shown * SHAPE[i] * wobble
-                }
-                Phase::Working => 0.15 + 0.45 * (0.5 + 0.5 * (t * 6.0 - fi * 0.9).sin()),
-                _ => 0.15,
+        if self.pushed.elapsed() >= STEP {
+            self.pushed = Instant::now();
+            let t = self.since.elapsed().as_secs_f32();
+            let breath = |period: f32, base: f32, depth: f32| base + depth * (t * std::f32::consts::TAU / period).sin();
+            let next = match self.phase {
+                Phase::Listening { .. } => self.shown,
+                // A sine fed through the same buffer ripples outwards from the centre.
+                Phase::Working => breath(1.1, 0.35, 0.25),
+                Phase::Ready => breath(3.2, 0.3, 0.2),
+                _ => 0.0,
             };
+            self.history.rotate_right(1);
+            self.history[0] = next;
+        }
+        for (i, h) in self.bars.iter_mut().enumerate() {
+            let f = falloff(i);
+            let target = self.history[i.abs_diff(BARS_PER_SIDE)] * f * f;
+            *h += (target - *h) * 0.5;
         }
         if let Some(v) = &self.view {
-            v.set_bars(&heights);
+            v.set_bars(&self.bars, self.history[0]);
         }
         true
     }
@@ -231,14 +265,22 @@ mod mac {
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-    use super::BARS;
+    use super::{BARS, bar_alpha};
 
-    const H: f64 = 44.0;
-    const BAR_W: f64 = 4.0;
-    const BAR_GAP: f64 = 3.5;
-    const PAD: f64 = 18.0;
-    const GAP: f64 = 12.0;
-    const MAX_BAR_H: f64 = 24.0;
+    const H: f64 = 72.0;
+    const RADIUS: f64 = 22.0;
+    const BAR_W: f64 = 3.5;
+    const BAR_GAP: f64 = 3.0;
+    /// How much taller than a dot the loudest centre bar gets.
+    const MAX_RISE: f64 = 24.0;
+    const PAD: f64 = 22.0;
+    /// The waveform's centre line, from the bottom of the pill.
+    const WAVE_Y: f64 = 24.0;
+    /// The label's baseline area starts this far up.
+    const TEXT_Y: f64 = 42.0;
+    /// Rings of the glow, innermost last; each adds a little light, so the centre is brightest.
+    const GLOW: [(f64, f64); 5] = [(150.0, 40.0), (118.0, 34.0), (88.0, 28.0), (60.0, 22.0), (34.0, 16.0)];
+    const GLOW_ALPHA: f64 = 0.085;
     /// Distance from the bottom of the usable screen area (above the Dock).
     const BOTTOM: f64 = 64.0;
 
@@ -246,8 +288,15 @@ mod mac {
         mtm: MainThreadMarker,
         panel: Retained<NSPanel>,
         bg: Retained<NSBox>,
+        glow: Vec<Retained<NSBox>>,
         bars: Vec<Retained<NSBox>>,
         label: Retained<NSTextField>,
+        /// The pill's width now; bars and glow are centred in it.
+        width: std::cell::Cell<f64>,
+    }
+
+    fn wave_width() -> f64 {
+        BARS as f64 * BAR_W + (BARS - 1) as f64 * BAR_GAP
     }
 
     fn color(rgb: [f64; 3], a: f64) -> Retained<NSColor> {
@@ -300,11 +349,22 @@ mod mac {
                         | NSWindowCollectionBehavior::IgnoresCycle,
                 );
                 let content = panel.contentView()?;
-                let bg = filled_box(mtm, frame, &color([0.11, 0.11, 0.12], 0.92), H / 2.0);
+                let bg = filled_box(mtm, frame, &color([0.09, 0.09, 0.10], 0.94), RADIUS);
+                bg.setBorderWidth(1.0);
+                bg.setBorderColor(&color([1.0, 1.0, 1.0], 0.12));
                 content.addSubview(&bg);
+                let glow: Vec<_> = GLOW
+                    .iter()
+                    .map(|&(w, h)| {
+                        let b = filled_box(mtm, rect(0.0, 0.0, w, h), &color([1.0, 1.0, 1.0], GLOW_ALPHA), h / 2.0);
+                        b.setAlphaValue(0.0);
+                        content.addSubview(&b);
+                        b
+                    })
+                    .collect();
                 let bars: Vec<_> = (0..BARS)
                     .map(|_| {
-                        let b = filled_box(mtm, rect(0.0, 0.0, BAR_W, 4.0), &color([1.0, 1.0, 1.0], 1.0), BAR_W / 2.0);
+                        let b = filled_box(mtm, rect(0.0, 0.0, BAR_W, BAR_W), &color([1.0, 1.0, 1.0], 1.0), BAR_W / 2.0);
                         content.addSubview(&b);
                         b
                     })
@@ -313,7 +373,7 @@ mod mac {
                 label.setTextColor(Some(&NSColor::whiteColor()));
                 label.setFont(Some(&NSFont::systemFontOfSize_weight(14.0, NSFontWeightMedium)));
                 content.addSubview(&label);
-                Some(Self { mtm, panel, bg, bars, label })
+                Some(Self { mtm, panel, bg, glow, bars, label, width: std::cell::Cell::new(200.0) })
             }
         }
 
@@ -321,14 +381,17 @@ mod mac {
             unsafe {
                 self.label.setStringValue(&NSString::from_str(text));
                 let fit = self.label.fittingSize();
-                let bars_w = BARS as f64 * BAR_W + (BARS - 1) as f64 * BAR_GAP;
-                let w = (PAD + bars_w + GAP + fit.width + PAD + 4.0).ceil();
-                let label_frame = rect(PAD + bars_w + GAP, ((H - fit.height) / 2.0).round(), fit.width + 4.0, fit.height);
+                let w = (PAD + wave_width().max(fit.width + 4.0) + PAD).ceil();
+                self.width.set(w);
+                let label_frame = rect(((w - fit.width - 4.0) / 2.0).round(), TEXT_Y, fit.width + 4.0, fit.height);
                 self.label.setFrame(label_frame);
                 self.bg.setFrame(rect(0.0, 0.0, w, H));
-                let c = color(rgb, 1.0);
-                for b in &self.bars {
-                    b.setFillColor(&c);
+                for (i, b) in self.bars.iter().enumerate() {
+                    b.setFillColor(&color(rgb, bar_alpha(i)));
+                }
+                for (b, &(gw, gh)) in self.glow.iter().zip(&GLOW) {
+                    b.setFillColor(&color(rgb, GLOW_ALPHA));
+                    b.setFrame(rect(((w - gw) / 2.0).round(), (WAVE_Y - gh / 2.0).round(), gw, gh));
                 }
                 // On the screen the user is working on, centred above the Dock.
                 let screen = NSScreen::mainScreen(self.mtm).or_else(|| NSScreen::screens(self.mtm).firstObject());
@@ -345,12 +408,16 @@ mod mac {
             }
         }
 
-        /// Bar heights as fractions (0..1) of the maximum.
-        pub fn set_bars(&self, heights: &[f32; BARS]) {
+        /// Bar heights as fractions (0..1) of the maximum; `glow`: how loud the newest sound is (0..1).
+        pub fn set_bars(&self, heights: &[f32; BARS], glow: f32) {
+            let left = (self.width.get() - wave_width()) / 2.0;
             for (i, (b, &h)) in self.bars.iter().zip(heights).enumerate() {
-                let bh = (MAX_BAR_H * h as f64).max(BAR_W);
-                let x = PAD + i as f64 * (BAR_W + BAR_GAP);
-                unsafe { b.setFrame(rect(x, ((H - bh) / 2.0).round(), BAR_W, bh)) };
+                let bh = BAR_W + MAX_RISE * h as f64;
+                let x = left + i as f64 * (BAR_W + BAR_GAP);
+                unsafe { b.setFrame(rect(x, WAVE_Y - bh / 2.0, BAR_W, bh)) };
+            }
+            for g in &self.glow {
+                unsafe { g.setAlphaValue(glow.clamp(0.0, 1.0) as f64) };
             }
         }
 
@@ -387,9 +454,9 @@ mod win {
     use windows::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CLEARTYPE_QUALITY, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW,
         CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DeleteDC, DeleteObject, EndPaint, FW_MEDIUM, FillRect,
-        GetDC, GetMonitorInfoW, GetTextExtentPoint32W, HFONT, InvalidateRect, LOGFONTW, MONITOR_DEFAULTTOPRIMARY,
-        MONITORINFO, MonitorFromWindow, PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkMode, SetTextColor,
-        SetWindowRgn, TRANSPARENT, TextOutW,
+        GetDC, GetMonitorInfoW, GetStockObject, GetTextExtentPoint32W, HFONT, InvalidateRect, LOGFONTW,
+        MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, NULL_PEN, PAINTSTRUCT, ReleaseDC, RoundRect, SRCCOPY,
+        SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT, TextOutW,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -401,15 +468,32 @@ mod win {
     };
     use windows::core::w;
 
-    use super::BARS;
+    use super::{BARS, bar_alpha};
 
-    // In pixels at 100% scaling (96 DPI).
-    const H: f32 = 44.0;
-    const BAR_W: f32 = 4.0;
-    const BAR_GAP: f32 = 4.0;
-    const PAD: f32 = 18.0;
-    const GAP: f32 = 12.0;
-    const MAX_BAR_H: f32 = 24.0;
+    // In pixels at 100% scaling (96 DPI), measured from the top (the macOS view's from the bottom).
+    const H: f32 = 72.0;
+    const RADIUS: f32 = 22.0;
+    const BAR_W: f32 = 3.5;
+    const BAR_GAP: f32 = 3.0;
+    const MAX_RISE: f32 = 24.0;
+    const PAD: f32 = 22.0;
+    /// The waveform's centre line, from the top.
+    const WAVE_Y: f32 = 48.0;
+    /// The label's top.
+    const TEXT_Y: f32 = 10.0;
+    /// Rings of the glow, outermost first; each adds a little light, so the centre is brightest.
+    const GLOW: [(f32, f32); 5] = [(150.0, 40.0), (118.0, 34.0), (88.0, 28.0), (60.0, 22.0), (34.0, 16.0)];
+    const GLOW_ALPHA: f64 = 0.085;
+    const BG: [f64; 3] = [0.09, 0.09, 0.10];
+
+    fn wave_width() -> f32 {
+        BARS as f32 * BAR_W + (BARS - 1) as f32 * BAR_GAP
+    }
+
+    /// `rgb` at opacity `a` over the background (the window is opaque, so blending is done here).
+    fn over_bg(rgb: [f64; 3], a: f64) -> [f64; 3] {
+        [0, 1, 2].map(|i| BG[i] + (rgb[i] - BG[i]) * a)
+    }
     /// Distance from the bottom of the work area (above the taskbar).
     const BOTTOM: f32 = 64.0;
 
@@ -420,6 +504,7 @@ mod win {
         text: Vec<u16>,
         rgb: [f64; 3],
         bars: [f32; BARS],
+        glow: f32,
         width: i32,
         scale: f32,
         font: HFONT,
@@ -490,7 +575,7 @@ mod win {
                 let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 235, LWA_ALPHA);
                 let font = make_font(1.0);
                 LOOK.with(|l| {
-                    *l.borrow_mut() = Some(Look { text: Vec::new(), rgb: [1.0; 3], bars: [0.15; BARS], width: 200, scale: 1.0, font })
+                    *l.borrow_mut() = Some(Look { text: Vec::new(), rgb: [1.0; 3], bars: [0.0; BARS], glow: 0.0, width: 200, scale: 1.0, font })
                 });
                 Some(Self { hwnd })
             }
@@ -532,8 +617,7 @@ mod win {
                     SelectObject(dc, old);
                     ReleaseDC(Some(self.hwnd), dc);
                 }
-                let bars_w = BARS as f32 * BAR_W + (BARS - 1) as f32 * BAR_GAP;
-                look.width = look.px(PAD + bars_w + GAP + PAD) + size.cx;
+                look.width = look.px(PAD + PAD) + look.px(wave_width()).max(size.cx);
                 look.text = text;
                 look.rgb = rgb;
                 Some((look.width, look.px(H), look.px(BOTTOM)))
@@ -546,7 +630,8 @@ mod win {
                     None => (100, 100),
                 };
                 let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
-                let region = CreateRoundRectRgn(0, 0, w + 1, h + 1, h, h);
+                let r = (RADIUS * 2.0 * scale).round() as i32;
+                let region = CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r);
                 SetWindowRgn(self.hwnd, Some(region), true); // the window owns the region now
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
                 let _ = InvalidateRect(Some(self.hwnd), None, false);
@@ -554,10 +639,11 @@ mod win {
         }
 
         /// Bar heights as fractions (0..1) of the maximum.
-        pub fn set_bars(&self, heights: &[f32; BARS]) {
+        pub fn set_bars(&self, heights: &[f32; BARS], glow: f32) {
             LOOK.with(|l| {
                 if let Some(look) = l.borrow_mut().as_mut() {
                     look.bars = *heights;
+                    look.glow = glow.clamp(0.0, 1.0);
                 }
             });
             unsafe {
@@ -601,25 +687,39 @@ mod win {
                 let mem = CreateCompatibleDC(Some(dc));
                 let bmp = CreateCompatibleBitmap(dc, w, h);
                 let old_bmp = SelectObject(mem, bmp.into());
-                let bg = CreateSolidBrush(colorref([0.11, 0.11, 0.12]));
+                let bg = CreateSolidBrush(colorref(BG));
                 FillRect(mem, &RECT { left: 0, top: 0, right: w, bottom: h }, bg);
                 let _ = DeleteObject(bg.into());
-                let bar = CreateSolidBrush(colorref(look.rgb));
+                let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
+                // Rounded shapes filled with `rgb` blended over the background.
+                let shape = |rgb: [f64; 3], left: i32, top: i32, width: i32, height: i32| {
+                    let brush = CreateSolidBrush(colorref(rgb));
+                    let old = SelectObject(mem, brush.into());
+                    let r = width.min(height);
+                    let _ = RoundRect(mem, left, top, left + width + 1, top + height + 1, r, r);
+                    SelectObject(mem, old);
+                    let _ = DeleteObject(brush.into());
+                };
+                let wave_y = look.px(WAVE_Y);
+                for (ring, &(gw, gh)) in GLOW.iter().enumerate() {
+                    let light = GLOW_ALPHA * look.glow as f64 * (ring + 1) as f64;
+                    let (gw, gh) = (look.px(gw), look.px(gh));
+                    shape(over_bg(look.rgb, light), (w - gw) / 2, wave_y - gh / 2, gw, gh);
+                }
+                let left = (w - look.px(wave_width())) / 2;
                 let bar_w = look.px(BAR_W);
                 for (i, &level) in look.bars.iter().enumerate() {
-                    let bh = look.px(MAX_BAR_H * level).max(bar_w);
-                    let x = look.px(PAD + i as f32 * (BAR_W + BAR_GAP));
-                    let top = (h - bh) / 2;
-                    FillRect(mem, &RECT { left: x, top, right: x + bar_w, bottom: top + bh }, bar);
+                    let bh = look.px(BAR_W + MAX_RISE * level);
+                    let x = left + look.px(i as f32 * (BAR_W + BAR_GAP));
+                    shape(over_bg(look.rgb, bar_alpha(i)), x, wave_y - bh / 2, bar_w, bh);
                 }
-                let _ = DeleteObject(bar.into());
+                SelectObject(mem, old_pen);
                 let old_font = SelectObject(mem, look.font.into());
                 SetBkMode(mem, TRANSPARENT);
                 SetTextColor(mem, COLORREF(0x00FF_FFFF));
                 let mut size = SIZE::default();
                 let _ = GetTextExtentPoint32W(mem, &look.text, &mut size);
-                let bars_w = BARS as f32 * BAR_W + (BARS - 1) as f32 * BAR_GAP;
-                let _ = TextOutW(mem, look.px(PAD + bars_w + GAP), (h - size.cy) / 2, &look.text);
+                let _ = TextOutW(mem, (w - size.cx) / 2, look.px(TEXT_Y), &look.text);
                 SelectObject(mem, old_font);
                 let _ = BitBlt(dc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
                 SelectObject(mem, old_bmp);
