@@ -162,6 +162,14 @@ pub fn accessibility_trusted(_prompt: bool) -> bool {
 
 pub const TALK_KEY_LABEL: &str = "Right Alt";
 
+/// Chords are macOS only (the talk key is always Right Alt here).
+pub fn key_name(code: u16) -> String {
+    format!("Key {code}")
+}
+
+/// The hook never changes kind (macOS: see its wake_hotkey_listener).
+pub fn wake_hotkey_listener() {}
+
 /// Starts the app at login: a value in HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run
 /// pointing at this exe (rewritten on every start, so it follows the app if it is moved).
 pub fn set_autostart(enable: bool) -> anyhow::Result<()> {
@@ -227,9 +235,12 @@ pub fn redirect_stderr(file: std::fs::File) {
     }
 }
 
-/// Shown when PoodPim is opened while it is already running.
-pub const ALREADY_RUNNING: &str = "PoodPim เปิดอยู่แล้ว\n\nไอคอนไมโครโฟนอยู่ที่มุมขวาล่างของจอ (ข้างนาฬิกา) \
-ถ้าไม่เห็น ให้กดลูกศร ^ ข้างนาฬิกา\n\nกด Alt ขวาค้างไว้เพื่อพูดได้เลย";
+/// Shown when PoodPim is opened while it is already running (`tap`: press mode "tap to start";
+/// the talk key is always Right Alt here).
+pub fn already_running(_key: crate::hotkey::Binding, tap: bool) -> String {
+    let how = if tap { "แตะ Alt ขวาเพื่อเริ่มพูด แล้วแตะอีกครั้งเมื่อจบ" } else { "กด Alt ขวาค้างไว้เพื่อพูดได้เลย" };
+    format!("PoodPim เปิดอยู่แล้ว\n\nไอคอนไมโครโฟนอยู่ที่มุมขวาล่างของจอ (ข้างนาฬิกา) ถ้าไม่เห็น ให้กดลูกศร ^ ข้างนาฬิกา\n\n{how}")
+}
 
 /// A message box with an OK button. Returns when it is closed.
 pub fn alert(message: &str) {
