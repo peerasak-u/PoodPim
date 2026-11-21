@@ -7,6 +7,9 @@
 pub enum HotkeyEvent {
     TalkDown,
     TalkUp,
+    /// macOS: another key went down right after the talk key (hotkey::TYPING_GUARD): the user
+    /// is typing a combination (⌥+e), not dictating. Never sent on Windows.
+    TalkAborted,
     Escape,
     /// The listener could not start (macOS: Accessibility / Input Monitoring not granted). It keeps retrying.
     PermissionMissing,

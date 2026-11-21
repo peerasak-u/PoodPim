@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
@@ -38,6 +38,7 @@ pub fn spawn_hotkey_listener(sink: HotkeySink) {
         .name("hotkey".into())
         .spawn(move || {
             let mut warned = false;
+            let our_pid = i64::from(std::process::id());
             loop {
                 // A tap can be created without Accessibility yet receive nothing, so wait for it.
                 if !accessibility_trusted(false) {
@@ -64,7 +65,7 @@ pub fn spawn_hotkey_listener(sink: HotkeySink) {
                                 let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
                                 if let Some((key, bit)) = talk_mod(code) {
                                     let down = event.get_flags().bits() & bit != 0;
-                                    if let Some(e) = hotkey::lock().feed(RawKey::Mod { key, down }) {
+                                    if let Some(e) = hotkey::lock().feed(RawKey::Mod { key, down }, Instant::now()) {
                                         s(e);
                                     }
                                 }
@@ -72,6 +73,12 @@ pub fn spawn_hotkey_listener(sink: HotkeySink) {
                             CGEventType::KeyDown => {
                                 if event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) == KEY_ESC {
                                     s(HotkeyEvent::Escape);
+                                } else if event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID) != our_pid {
+                                    // Not our own ⌘V / live typing.
+                                    let repeat = event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
+                                    if let Some(e) = hotkey::lock().feed(RawKey::Down { repeat }, Instant::now()) {
+                                        s(e);
+                                    }
                                 }
                             }
                             _ => {}
