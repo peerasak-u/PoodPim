@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
@@ -14,21 +14,64 @@ use core_graphics::event::{
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 use super::{HotkeyEvent, HotkeySink};
-use crate::hotkey::{KeyClass, ModKey};
+use crate::hotkey::{self, KeyClass, ModKey, Mods, RawKey};
 
-const KEY_RIGHT_OPTION: i64 = 61;
-const KEY_ESC: i64 = 53;
 const KEY_V: u16 = 9;
-const NX_DEVICERALTKEYMASK: u64 = 0x40; // device-dependent bit: right Option is down
 
-/// Listens on a background thread with a listen-only CGEventTap. Needs Accessibility
-/// (or Input Monitoring); until granted it reports PermissionMissing and retries.
+/// A modifier key's keycode → the key and its device-dependent flag bit (set while it is down).
+/// Caps Lock (57) is not a talk key.
+fn mod_key(code: i64) -> Option<(ModKey, u64)> {
+    Some(match code {
+        59 => (ModKey::LeftControl, 0x1),
+        62 => (ModKey::RightControl, 0x2000),
+        58 => (ModKey::LeftOption, 0x20),
+        61 => (ModKey::RightOption, 0x40),
+        56 => (ModKey::LeftShift, 0x2),
+        60 => (ModKey::RightShift, 0x4),
+        55 => (ModKey::LeftCommand, 0x8),
+        54 => (ModKey::RightCommand, 0x10),
+        63 => (ModKey::Fn, 0x800000),
+        _ => return None,
+    })
+}
+
+fn raw_key(etype: CGEventType, event: &CGEvent) -> Option<(RawKey, KeyClass)> {
+    let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+    match etype {
+        CGEventType::FlagsChanged => {
+            let (key, bit) = mod_key(code)?;
+            Some((RawKey::Mod { key, down: event.get_flags().bits() & bit != 0 }, KeyClass::Other))
+        }
+        CGEventType::KeyDown => {
+            let code = code as u16;
+            let f = event.get_flags();
+            let mods = Mods {
+                control: f.contains(CGEventFlags::CGEventFlagControl),
+                option: f.contains(CGEventFlags::CGEventFlagAlternate),
+                shift: f.contains(CGEventFlags::CGEventFlagShift),
+                command: f.contains(CGEventFlags::CGEventFlagCommand),
+            };
+            let repeat = event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
+            Some((RawKey::Down { code, mods, repeat }, key_class(code)))
+        }
+        CGEventType::KeyUp => Some((RawKey::Up { code: code as u16 }, key_class(code as u16))),
+        _ => None,
+    }
+}
+
+/// Listens on a background thread with a CGEventTap. Needs Accessibility (or Input
+/// Monitoring); until granted it reports PermissionMissing and retries.
+///
+/// The tap is listen-only while the talk key is a modifier (it is never kept from apps), and
+/// active (can drop keys) only for a chord or while a new key is being recorded. When that need
+/// changes (a new binding from Settings), the tap is replaced by the other kind.
 pub fn spawn_hotkey_listener(sink: HotkeySink) {
     let sink: Arc<HotkeySink> = Arc::new(sink);
     std::thread::Builder::new()
         .name("hotkey".into())
         .spawn(move || {
             let mut warned = false;
+            let our_pid = i64::from(std::process::id());
             loop {
                 // A tap can be created without Accessibility yet receive nothing, so wait for it.
                 if !accessibility_trusted(false) {
@@ -39,32 +82,30 @@ pub fn spawn_hotkey_listener(sink: HotkeySink) {
                     std::thread::sleep(Duration::from_secs(1));
                     continue;
                 }
+                let active = hotkey::lock().wants_swallow();
                 let disabled = Arc::new(AtomicBool::new(false));
                 let (s, d) = (sink.clone(), disabled.clone());
+                // Every keystroke passes through this while the tap is active: one lock, no I/O.
                 let tap = CGEventTap::new(
                     CGEventTapLocation::Session,
                     CGEventTapPlacement::HeadInsertEventTap,
-                    CGEventTapOptions::ListenOnly,
-                    vec![CGEventType::FlagsChanged, CGEventType::KeyDown],
+                    if active { CGEventTapOptions::Default } else { CGEventTapOptions::ListenOnly },
+                    vec![CGEventType::FlagsChanged, CGEventType::KeyDown, CGEventType::KeyUp],
                     move |_proxy, etype, event| {
-                        match etype {
-                            CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
-                                d.store(true, Ordering::SeqCst)
-                            }
-                            CGEventType::FlagsChanged => {
-                                if event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) == KEY_RIGHT_OPTION {
-                                    let down = event.get_flags().bits() & NX_DEVICERALTKEYMASK != 0;
-                                    s(if down { HotkeyEvent::TalkDown } else { HotkeyEvent::TalkUp });
-                                }
-                            }
-                            CGEventType::KeyDown => {
-                                if event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) == KEY_ESC {
-                                    s(HotkeyEvent::Escape);
-                                }
-                            }
-                            _ => {}
+                        if matches!(etype, CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput) {
+                            d.store(true, Ordering::SeqCst);
+                            return CallbackResult::Keep;
                         }
-                        CallbackResult::Keep
+                        // Our own ⌘V and live typing.
+                        if event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID) == our_pid {
+                            return CallbackResult::Keep;
+                        }
+                        let Some((raw, class)) = raw_key(etype, event) else { return CallbackResult::Keep };
+                        let verdict = hotkey::lock().feed(raw, Instant::now(), class);
+                        if let Some(e) = verdict.event {
+                            s(e);
+                        }
+                        if verdict.swallow { CallbackResult::Drop } else { CallbackResult::Keep }
                     },
                 );
                 let Ok(tap) = tap else {
@@ -76,15 +117,21 @@ pub fn spawn_hotkey_listener(sink: HotkeySink) {
                     continue;
                 };
                 let source = tap.mach_port().create_runloop_source(0).expect("runloop source");
-                CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
+                let run_loop = CFRunLoop::get_current();
+                run_loop.add_source(&source, unsafe { kCFRunLoopCommonModes });
                 tap.enable();
+                eprintln!("keyboard tap: {}", if active { "active" } else { "listen-only" });
                 sink(HotkeyEvent::Ready);
                 loop {
-                    CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_secs(1), false);
+                    CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(200), false);
                     if disabled.swap(false, Ordering::SeqCst) {
                         tap.enable();
                     }
+                    if hotkey::lock().wants_swallow() != active {
+                        break;
+                    }
                 }
+                run_loop.remove_source(&source, unsafe { kCFRunLoopCommonModes });
             }
         })
         .expect("spawn hotkey thread");
