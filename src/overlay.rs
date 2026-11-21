@@ -32,8 +32,7 @@ impl Phase {
             Phase::Hidden => String::new(),
             Phase::Ready if tap => format!("PoodPim พร้อมแล้ว · แตะ {key} เพื่อเริ่มพูด"),
             Phase::Ready => format!("PoodPim พร้อมแล้ว · กด {key} ค้างไว้เพื่อพูด"),
-            Phase::Listening { handsfree: false } => "กำลังฟัง…".into(),
-            Phase::Listening { handsfree: true } => format!("กำลังฟัง… แตะ {key} อีกครั้งเพื่อจบ"),
+            Phase::Listening { .. } => "กำลังฟัง…".into(),
             Phase::Working => "กำลังถอดเสียง…".into(),
             Phase::Done => "✓ พิมพ์แล้ว".into(),
             Phase::Copied => "คัดลอกไว้แล้ว กด Ctrl+V เอง (แอปนี้รันแบบ Administrator)".into(),
@@ -182,13 +181,13 @@ impl Overlay {
             if self.phase == Phase::Hidden {
                 v.hide();
             } else {
-                v.show(&self.label(), self.phase.rgb());
+                v.show(&self.label(), self.phase.rgb(), false);
                 if !v.on_active_space() {
                     // A new panel joins the Spaces there are now (see View::on_active_space).
                     eprintln!("overlay: not on the current Space, made again");
                     self.view = sys::View::new();
                     if let Some(v) = &self.view {
-                        v.show(&self.label(), self.phase.rgb());
+                        v.show(&self.label(), self.phase.rgb(), false);
                     }
                 }
             }
@@ -205,8 +204,11 @@ impl Overlay {
         }
         self.preview = tail;
         if let Some(v) = &self.view {
-            let label = if self.preview.is_empty() { self.label() } else { self.preview.clone() };
-            v.show(&label, self.phase.rgb());
+            if self.preview.is_empty() {
+                v.show(&self.label(), self.phase.rgb(), false);
+            } else {
+                v.show(&self.preview, self.phase.rgb(), true);
+            }
         }
     }
 
@@ -283,6 +285,8 @@ mod mac {
     /// Sukhumvit Set has no loops (หัว); the system font falls back to Thonburi for Thai, which does.
     const FONT: &str = "SukhumvitSet-Medium";
     const FONT_SIZE: f64 = 15.0;
+    /// The app's own words ("กำลังฟัง…", "✓ พิมพ์แล้ว") are dimmed, so they never read as dictated text.
+    const STATUS_ALPHA: f64 = 0.5;
     /// The waveform's centre line, from the bottom of the pill.
     const WAVE_Y: f64 = 26.0;
     /// The words' bottom, from the bottom of the pill: clear of the loudest bars.
@@ -416,9 +420,11 @@ mod mac {
             }
         }
 
-        pub fn show(&self, text: &str, rgb: [f64; 3]) {
+        /// `words`: `text` is what the user said (bright), not the app's own status (dimmed).
+        pub fn show(&self, text: &str, rgb: [f64; 3], words: bool) {
             unsafe {
                 self.label.setStringValue(&NSString::from_str(text));
+                self.label.setTextColor(Some(&color([1.0, 1.0, 1.0], if words { 1.0 } else { STATUS_ALPHA })));
                 let fit = self.label.fittingSize();
                 let (tw, th) = (fit.width + 4.0, fit.height);
                 // Centred while it fits between the fades; past that, its end (the newest words) shows.
@@ -549,6 +555,7 @@ mod win {
     /// for us).
     struct Look {
         text: Vec<u16>,
+        words: bool,
         rgb: [f64; 3],
         bars: [f32; BARS],
         glow: f32,
@@ -622,13 +629,14 @@ mod win {
                 let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 235, LWA_ALPHA);
                 let font = make_font(1.0);
                 LOOK.with(|l| {
-                    *l.borrow_mut() = Some(Look { text: Vec::new(), rgb: [1.0; 3], bars: [0.0; BARS], glow: 0.0, width: 200, scale: 1.0, font })
+                    *l.borrow_mut() = Some(Look { text: Vec::new(), words: false, rgb: [1.0; 3], bars: [0.0; BARS], glow: 0.0, width: 200, scale: 1.0, font })
                 });
                 Some(Self { hwnd })
             }
         }
 
-        pub fn show(&self, text: &str, rgb: [f64; 3]) {
+        /// `words`: `text` is what the user said (bright), not the app's own status (dimmed).
+        pub fn show(&self, text: &str, rgb: [f64; 3], words: bool) {
             let text: Vec<u16> = text.encode_utf16().collect();
             // The screen the user is working on: move there first, so the DPI read below is
             // that monitor's.
@@ -666,6 +674,7 @@ mod win {
                 }
                 look.width = look.px(PAD + TEXT_W + PAD);
                 look.text = text;
+                look.words = words;
                 look.rgb = rgb;
                 Some((look.width, look.px(H), look.px(BOTTOM)))
             });
@@ -763,7 +772,8 @@ mod win {
                 SelectObject(mem, old_pen);
                 let old_font = SelectObject(mem, look.font.into());
                 SetBkMode(mem, TRANSPARENT);
-                SetTextColor(mem, COLORREF(0x00FF_FFFF));
+                // The app's own words are dimmed, so they never read as dictated text.
+                SetTextColor(mem, colorref(over_bg([1.0; 3], if look.words { 1.0 } else { 0.5 })));
                 let mut size = SIZE::default();
                 let _ = GetTextExtentPoint32W(mem, &look.text, &mut size);
                 let (pad, text_w) = (look.px(PAD), look.px(TEXT_W));
