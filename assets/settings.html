@@ -858,7 +858,8 @@
     }
     $("unload").value = unload;
     $("update").disabled = !s.updates;
-    $("uninstall-row").classList.toggle("hidden", !s.updates);
+    $("update-hint").textContent = s.updates ? "แอปตรวจให้เองวันละครั้ง" : "ปิดอยู่ในรุ่นนี้ (build จาก fork)";
+    $("uninstall-row").classList.toggle("hidden", !s.uninstall);
     requestAnimationFrame(() => document.body.classList.add("ready"));
   };
   window.toast = (text) => {

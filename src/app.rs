@@ -422,7 +422,7 @@ pub fn run() -> Result<()> {
                     }
                     app.offer_model_upgrade();
                 }
-                if update::supported() {
+                if update::enabled() {
                     let p = proxy.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(UPDATE_FIRST_CHECK);
@@ -1806,7 +1806,8 @@ impl App {
             "chooseKey": cfg!(target_os = "macos"),
             "needsModel": self.cfg.backend == Backend::Local && self.state == State::NeedsModel,
             "needsPermission": self.needs_permission,
-            "updates": update::supported(),
+            "updates": update::enabled(),
+            "uninstall": update::supported(),
             "post": self.post_state(),
         })
         .to_string()

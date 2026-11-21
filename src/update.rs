@@ -93,6 +93,14 @@ pub fn supported() -> bool {
     installed().is_some()
 }
 
+/// Whether this copy looks for updates. Off unless built with POODPIM_UPDATES=1: this is a fork
+/// (peerasak-u/PoodPim), and REPO's releases are upstream's app, which would replace it and
+/// drop the fork's settings on its first save (install.sh also only accepts upstream's
+/// signature, so the fork can't publish its own).
+pub fn enabled() -> bool {
+    option_env!("POODPIM_UPDATES") == Some("1") && supported()
+}
+
 /// Installs release `tag`; the caller then calls `restart()` and quits.
 ///
 /// macOS: starts the bundled install.sh, which waits for this app to quit, checks the new app's
