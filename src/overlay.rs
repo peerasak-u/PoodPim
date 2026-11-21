@@ -34,7 +34,7 @@ impl Phase {
             Phase::Ready => format!("PoodPim พร้อมแล้ว · กด {key} ค้างไว้เพื่อพูด"),
             Phase::Listening { .. } => "กำลังฟัง…".into(),
             Phase::Working => "กำลังถอดเสียง…".into(),
-            Phase::Done => "✓ พิมพ์แล้ว".into(),
+            Phase::Done => "พิมพ์แล้ว".into(),
             Phase::Copied => "คัดลอกไว้แล้ว กด Ctrl+V เอง (แอปนี้รันแบบ Administrator)".into(),
             Phase::NoSpeech => "ไม่ได้ยินเสียงพูด".into(),
             Phase::Cancelled => "ยกเลิกแล้ว".into(),
@@ -285,7 +285,7 @@ mod mac {
     /// Sukhumvit Set has no loops (หัว); the system font falls back to Thonburi for Thai, which does.
     const FONT: &str = "SukhumvitSet-Medium";
     const FONT_SIZE: f64 = 15.0;
-    /// The app's own words ("กำลังฟัง…", "✓ พิมพ์แล้ว") are dimmed, so they never read as dictated text.
+    /// The app's own words ("กำลังฟัง…", "พิมพ์แล้ว") are dimmed, so they never read as dictated text.
     const STATUS_ALPHA: f64 = 0.5;
     /// The waveform's centre line, from the bottom of the pill.
     const WAVE_Y: f64 = 26.0;
