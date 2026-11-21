@@ -1,12 +1,24 @@
 //! OS-specific pieces: the global push-to-talk key, the paste keystroke, permissions.
 //!
-//! Push-to-talk key: Right Option (macOS) / Right Alt (Windows). Esc cancels.
+//! Push-to-talk key: a setting (see hotkey.rs), Right Option (macOS) / Right Alt (Windows) by
+//! default. Esc cancels.
+
+use crate::hotkey::{Binding, Reject};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
     TalkDown,
     TalkUp,
     Escape,
+    /// Another key was pressed right after the talk modifier: the user is typing a combination
+    /// (⌥+e), not dictating.
+    TalkAborted,
+    /// Recording a new talk key from Settings: this one was pressed (and is now in use).
+    Captured(Binding),
+    /// Recording a new talk key: this key can't be used; still recording.
+    CaptureRejected(Reject),
+    /// Recording a new talk key: Esc, or it timed out.
+    CaptureCancelled,
     /// The listener could not start (macOS: Accessibility / Input Monitoring not granted). It keeps retrying.
     PermissionMissing,
     /// The listener is running.

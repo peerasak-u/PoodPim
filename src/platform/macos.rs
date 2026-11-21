@@ -14,6 +14,7 @@ use core_graphics::event::{
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 use super::{HotkeyEvent, HotkeySink};
+use crate::hotkey::{KeyClass, ModKey};
 
 const KEY_RIGHT_OPTION: i64 = 61;
 const KEY_ESC: i64 = 53;
@@ -125,6 +126,90 @@ pub fn foreground_is_elevated() -> bool {
 }
 
 pub const TALK_KEY_LABEL: &str = "Right ⌥";
+
+/// The talk keys offered as one-click choices in Settings.
+pub const TALK_PRESETS: &[(ModKey, &str)] =
+    &[(ModKey::RightOption, "⌥ ขวา"), (ModKey::RightCommand, "⌘ ขวา"), (ModKey::RightControl, "⌃ ขวา"), (ModKey::Fn, "fn 🌐")];
+
+pub fn mod_label(k: ModKey) -> &'static str {
+    match k {
+        ModKey::LeftControl => "Left ⌃",
+        ModKey::RightControl => "Right ⌃",
+        ModKey::LeftOption => "Left ⌥",
+        ModKey::RightOption => "Right ⌥",
+        ModKey::LeftShift => "Left ⇧",
+        ModKey::RightShift => "Right ⇧",
+        ModKey::LeftCommand => "Left ⌘",
+        ModKey::RightCommand => "Right ⌘",
+        ModKey::Fn => "fn",
+    }
+}
+
+/// F-keys by virtual keycode (they are not in order).
+const F_KEYS: [u16; 20] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90];
+
+pub fn key_class(code: u16) -> KeyClass {
+    match code {
+        53 => KeyClass::Escape,
+        // Volume, Help, the JIS 英数 / かな keys, and anything past the keyboard's usual range
+        // (media and dictation keys): none of them type a character.
+        _ if F_KEYS.contains(&code) => KeyClass::Function,
+        72 | 73 | 74 | 102 | 104 | 114 => KeyClass::Function,
+        128.. => KeyClass::Function,
+        _ => KeyClass::Other,
+    }
+}
+
+/// A key's name for labels (US layout), e.g. "Space", "F5", "K".
+pub fn key_name(code: u16) -> String {
+    if let Some(i) = F_KEYS.iter().position(|&c| c == code) {
+        return format!("F{}", i + 1);
+    }
+    /// Keycodes 0–47 on a US keyboard (36 is Return, named below).
+    const CHARS: [&str; 48] = [
+        "A", "S", "D", "F", "H", "G", "Z", "X", "C", "V", "§", "B", "Q", "W", "E", "R", "Y", "T", "1", "2", "3", "4", "6", "5",
+        "=", "9", "7", "-", "8", "0", "]", "O", "U", "[", "I", "P", "", "L", "J", "'", "K", ";", "\\", ",", "/", "N", "M", ".",
+    ];
+    let named = match code {
+        36 => "Return",
+        48 => "Tab",
+        49 => "Space",
+        50 => "`",
+        51 => "Delete",
+        53 => "Esc",
+        65 => "Keypad .",
+        67 => "Keypad *",
+        69 => "Keypad +",
+        71 => "Clear",
+        75 => "Keypad /",
+        76 => "Enter",
+        78 => "Keypad -",
+        81 => "Keypad =",
+        82..=89 => return format!("Keypad {}", code - 82),
+        91 => "Keypad 8",
+        92 => "Keypad 9",
+        102 => "英数",
+        104 => "かな",
+        114 => "Help",
+        115 => "Home",
+        116 => "Page Up",
+        117 => "⌦",
+        119 => "End",
+        121 => "Page Down",
+        123 => "←",
+        124 => "→",
+        125 => "↓",
+        126 => "↑",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    match CHARS.get(code as usize) {
+        Some(c) if !c.is_empty() => c.to_string(),
+        _ => format!("Key {code}"),
+    }
+}
 
 /// Where the app's log goes when it isn't started from a terminal.
 pub fn log_dir() -> Option<std::path::PathBuf> {

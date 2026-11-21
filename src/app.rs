@@ -1251,6 +1251,7 @@ impl App {
                     self.overlay.set(Phase::Cancelled);
                 }
             }
+            HotkeyEvent::TalkAborted | HotkeyEvent::Captured(_) | HotkeyEvent::CaptureRejected(_) | HotkeyEvent::CaptureCancelled => {}
             HotkeyEvent::PermissionMissing => {
                 eprintln!("Cannot watch the keyboard yet: grant Accessibility permission");
                 self.needs_permission = true;
