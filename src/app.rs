@@ -129,8 +129,6 @@ struct Ui {
     add_correction: MenuItem,
     settings: MenuItem,
     download: MenuItem,
-    /// How to use the talk key (follows the key and press mode set in Settings).
-    hint: MenuItem,
     quit: MenuItem,
     /// Whether `permission` / `download` are in the menu now (only while they are needed).
     shown_permission: std::cell::Cell<bool>,
@@ -400,7 +398,7 @@ pub fn run() -> Result<()> {
             Event::NewEvents(StartCause::Init) => {
                 app.apply_talk_key();
                 app.overlay.set_position(app.cfg.pill_position, false);
-                ui = Some(build_ui(app.talk_hint()));
+                ui = Some(build_ui());
                 let p = proxy.clone();
                 platform::spawn_hotkey_listener(Box::new(move |e| {
                     let _ = p.send_event(UserEvent::Hotkey(e, Instant::now()));
@@ -514,20 +512,23 @@ pub fn run() -> Result<()> {
     })
 }
 
-fn build_ui(hint: String) -> Ui {
+fn build_ui() -> Ui {
     let status = MenuItem::new("Loading…", false, None);
-    let permission = MenuItem::new("⚠ Open Accessibility settings…", true, None);
+    let permission = MenuItem::new(
+        if cfg!(target_os = "macos") { "Open Accessibility settings…" } else { "⚠ Open Accessibility settings…" },
+        true,
+        None,
+    );
     let paste_last = MenuItem::new("Paste last transcript", false, None);
     let recent = Submenu::new("Recent", false);
     let add_correction = MenuItem::new("Add correction…", true, None);
     let settings = MenuItem::new("Settings…", true, None);
     let download = MenuItem::new("Download model (1 GB)", true, None);
-    let hint = MenuItem::new(hint, false, None);
     let quit = MenuItem::new("Quit PoodPim", true, None);
     let menu = Menu::new();
     let seps: Vec<PredefinedMenuItem> = (0..3).map(|_| PredefinedMenuItem::separator()).collect();
     // The permission and download items go in only while needed (see refresh).
-    menu.append_items(&[&status, &seps[0], &paste_last, &recent, &add_correction, &seps[1], &settings, &seps[2], &hint, &quit])
+    menu.append_items(&[&status, &seps[0], &paste_last, &recent, &add_correction, &seps[1], &settings, &seps[2], &quit])
         .expect("menu");
     let (icon, template) = icon_for(State::Loading);
     let builder = TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_tooltip("PoodPim — Thai dictation");
@@ -539,6 +540,7 @@ fn build_ui(hint: String) -> Ui {
         builder.with_icon(icon)
     };
     let tray = builder.build().expect("tray icon");
+    menu_symbols(&menu);
     Ui {
         tray,
         menu,
@@ -549,7 +551,6 @@ fn build_ui(hint: String) -> Ui {
         add_correction,
         settings,
         download,
-        hint,
         quit,
         shown_permission: Default::default(),
         shown_download: Default::default(),
@@ -575,16 +576,6 @@ impl App {
     /// The cancel key in use (Windows: always Esc).
     fn cancel_key(&self) -> Chord {
         self.cfg.cancel_key.usable()
-    }
-
-    /// The tray menu's line on how to use the talk key.
-    fn talk_hint(&self) -> String {
-        let (key, cancel) = (self.talk_key().label(), self.cancel_key().label());
-        match self.cfg.talk_mode {
-            TalkMode::Auto => format!("Hold {key} to talk · tap = hands-free, stops when you stop speaking · {cancel} = cancel"),
-            TalkMode::Hold => format!("Hold {key} to talk · {cancel} = cancel"),
-            TalkMode::Toggle => format!("Tap {key} to start, tap again to finish · {cancel} = cancel"),
-        }
     }
 
     /// Tells the keyboard tap whether there is a dictation to cancel, so a cancel key other than
@@ -654,8 +645,8 @@ impl App {
 
     fn ready_text(&self) -> String {
         match self.cfg.backend {
-            Backend::Local => "Ready · Local (OpenThai 2.0 ASR)".into(),
-            Backend::Lambda => "Ready · Serverless (AWS Lambda)".into(),
+            Backend::Local => "Ready".into(),
+            Backend::Lambda => "Ready · Server".into(),
         }
     }
 
@@ -1975,7 +1966,6 @@ impl App {
         } else {
             ui.status.set_text(&self.status_text);
         }
-        ui.hint.set_text(self.talk_hint());
         let need_download = self.cfg.backend == Backend::Local
             && matches!(self.state, State::NeedsModel | State::Error)
             && !model::is_ready(&model::model_dir());
@@ -1984,11 +1974,13 @@ impl App {
         if self.needs_permission != ui.shown_permission.get() {
             ui.shown_permission.set(self.needs_permission);
             let _ = if self.needs_permission { ui.menu.insert(&ui.permission, 1) } else { ui.menu.remove(&ui.permission) };
+            menu_symbols(&ui.menu);
         }
         if need_download != ui.shown_download.get() {
             ui.shown_download.set(need_download);
             let at = 7 + usize::from(ui.shown_permission.get());
             let _ = if need_download { ui.menu.insert(&ui.download, at) } else { ui.menu.remove(&ui.download) };
+            menu_symbols(&ui.menu);
         }
         ui.paste_last.set_enabled(!self.last_text.is_empty());
         if self.recent_dirty {
@@ -2002,6 +1994,41 @@ impl App {
         let _ = (template, ui.tray.set_icon(Some(icon)));
     }
 }
+
+/// macOS: an SF Symbol in front of each tray menu entry, as in the system's own menus. The
+/// first entry is the status line (its text changes; the symbol stays). Entries put in later
+/// (permission, download) get theirs when this runs again.
+#[cfg(target_os = "macos")]
+fn menu_symbols(menu: &Menu) {
+    use objc2_app_kit::{NSImage, NSMenu};
+    use objc2_foundation::NSString;
+    use tray_icon::menu::ContextMenu;
+    const BY_TITLE: [(&str, &str); 7] = [
+        ("Open Accessibility settings…", "exclamationmark.triangle"),
+        ("Paste last transcript", "doc.on.clipboard"),
+        ("Recent", "clock.arrow.circlepath"),
+        ("Add correction…", "character.cursor.ibeam"),
+        ("Settings…", "gearshape"),
+        ("Download model (1 GB)", "arrow.down.circle"),
+        ("Quit PoodPim", "power"),
+    ];
+    // SAFETY: muda's NSMenu for this menu, alive as long as `menu`.
+    let Some(ns) = (unsafe { menu.ns_menu().cast::<NSMenu>().as_ref() }) else { return };
+    let symbol = |name: &str| NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None);
+    for (i, item) in ns.itemArray().iter().enumerate() {
+        if item.isSeparatorItem() || item.image().is_some() {
+            continue;
+        }
+        let title = item.title().to_string();
+        let name = if i == 0 { Some("waveform") } else { BY_TITLE.iter().find(|(t, _)| *t == title).map(|(_, n)| *n) };
+        if let Some(image) = name.and_then(symbol) {
+            item.setImage(Some(&image));
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn menu_symbols(_: &Menu) {}
 
 /// macOS app menu while Settings is open: Edit gives the text fields ⌘X / ⌘C / ⌘V / ⌘A / ⌘Z.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
