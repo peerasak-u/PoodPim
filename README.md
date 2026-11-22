@@ -47,7 +47,8 @@ irm https://raw.githubusercontent.com/thirawat/PoodPim/main/install.ps1 | iex
 
 The installer downloads the latest release, checks its SHA-256 (and on macOS that the app
 carries the PoodPim signature), installs it (`/Applications`, or
-`%LOCALAPPDATA%\Programs\PoodPim` with a Start menu shortcut) and opens it; the app then
+`%LOCALAPPDATA%\Programs\PoodPim` with a Start menu shortcut; on Windows it also installs the
+Microsoft Visual C++ Runtime if the PC lacks it, after Windows asks for permission) and opens it; the app then
 offers to download the speech model (1 GB). Run it again to update. A release candidate:
 put `POODPIM_VERSION=v1.0.1-rc.1` in front of `sh` (macOS) or set `$env:POODPIM_VERSION`
 first (Windows).
@@ -68,10 +69,16 @@ on Windows also Settings › Apps › PoodPim.
 |---|---|---|
 | Talk | hold **Right ⌥** | hold **Right Alt** |
 | Hands-free, typed as you speak | tap Right ⌥, tap again to finish | tap Right Alt, tap again |
-| Cancel | Esc | Esc |
+| Cancel | Esc (not passed on to the app you're in) | Esc |
 | Paste | ⌘V (clipboard restored after) | Ctrl+V (clipboard restored after) |
 
 The menu-bar / tray icon shows the state (mic = ready, red = listening, amber = transcribing).
+If the microphone stops sending sound mid-recording (unplugged, a Bluetooth headset dropping:
+nothing for 2 s, or 5 s from the start), the recording ends, what was heard is typed, and the
+pill says so. If the talk key's release never arrives (macOS Secure Input, e.g. in a password
+field), the app notices the key is up after a second and finishes as if it had been let go.
+Dictating into a password field works, but while macOS Secure Input is on the pill doesn't
+show the words, and the text isn't kept for "Paste last transcript" or Recent.
 Its menu keeps the everyday actions: paste last transcript, **Recent** (the last 10
 transcripts, kept in memory only, each with Paste and "Fix a word…", which opens "Add
 correction…" filled with that transcript), Add correction…, and **Settings…**. "Open
@@ -95,9 +102,11 @@ part and put back after the last. Hold-to-talk still types everything on release
 Settings → Typing while you speak.
 
 **Seeing the words while you speak:** with the local model, the pill shows the end of what it
-has heard so far, updated about every 0.7 s: the unfinished part is transcribed again in the
-background (only its last 6 s, ~250 ms on an M3), only while the model has nothing else to do,
-so typing is never held up. Off in Settings → Show words in the pill.
+has heard so far, updated about every 1.2 s while you speak (not in silence): the unfinished part
+is transcribed again in the background (only its last 6 s, ~250 ms on an M3), only while the
+model has nothing else to do, so typing is never held up. On a slower PC it updates less often.
+It costs about a third of a CPU core while you speak (measured on an M3: 53 s of speech took
+~31 CPU-seconds with it, ~15 without). Off in Settings → Show words in the pill.
 
 Numbers said in words become digits ("สองร้อยห้าสิบ" → 250, "สามจุดสอง" → 3.2,
 "ห้าสิบเปอร์เซ็นต์" → 50%), carefully: a lone number word only after a word that asks for a
@@ -250,7 +259,11 @@ Windows: `package-windows.sh` cross-compiles from macOS with
 [cargo-xwin](https://github.com/rust-cross/cargo-xwin) (`cargo install --locked cargo-xwin`;
 MSVC/SDK libraries are cached in `target/xwin-cache`), or build on Windows with the MSVC
 toolchain (`cargo build --release`). The zip ships `DirectML.dll` next to the exe (the prebuilt
-ONNX Runtime for Windows always links it) and needs the Visual C++ runtime on the PC.
+ONNX Runtime for Windows always links it) and needs the Visual C++ runtime on the PC
+(install.ps1 installs Microsoft's `vc_redist.x64.exe`, after checking its signature, unless
+`msvcp140.dll`, `vcruntime140.dll` and `vcruntime140_1.dll` are in System32 (on ARM64: the x64
+runtime is registered) or PoodPim was running before the update; it doesn't start the app while
+the runtime is missing).
 
 On Windows, PoodPim takes Right Alt for itself: other apps never see it, because an Alt
 pressed and released on its own opens the focused app's menu (Office KeyTips). Left Alt is
