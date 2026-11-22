@@ -1441,7 +1441,7 @@ impl App {
     /// Keeps recording after the key is let go, until the next press (a tap, or "tap to start").
     fn go_handsfree(&mut self) {
         self.handsfree = true;
-        if self.cfg.live_typing
+        if self.types_live()
             && let Some(seg) = self.segmenter.as_mut()
         {
             seg.set_live(); // shorter parts, so text appears sooner
@@ -1525,7 +1525,7 @@ impl App {
         let text = self.tidy(&text);
         self.heard.push(text.clone());
         self.show_heard();
-        let live = self.cfg.live_typing && self.handsfree && self.state == State::Recording;
+        let live = self.types_live() && self.handsfree && self.state == State::Recording;
         if !live || self.typed.len() + 1 != self.heard.len() {
             return; // left for the end, with every part after it (they must stay in order)
         }
@@ -1538,6 +1538,12 @@ impl App {
         let (typer, _) = self.typer.get_or_insert_with(|| (inserter::LiveTyper::start(restore), window));
         typer.type_text(continuation(&self.typed, &text));
         self.typed.push(text);
+    }
+
+    /// `live_typing`, unless the language model polishes the text: it needs the whole of it, so
+    /// with polish set up a recording waits for the end and is sent once.
+    fn types_live(&self) -> bool {
+        self.cfg.live_typing && !self.cfg.polish.ready()
     }
 
     /// Forgets this recording's live typing; the typer puts the clipboard back once done.
@@ -1813,6 +1819,7 @@ impl App {
             "restore": self.cfg.restore_clipboard,
             "unload": self.cfg.unload_min(),
             "live": self.cfg.live_typing,
+            "liveHeld": self.cfg.live_typing && self.cfg.polish.ready(),
             "preview": self.cfg.live_preview,
             "autostart": self.cfg.start_at_login,
             "vocabCount": self.vocab_count,

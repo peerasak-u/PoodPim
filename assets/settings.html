@@ -372,7 +372,8 @@
 <div class="card">
   <div class="row">
     <div class="text"><div class="label">พิมพ์ระหว่างพูด</div>
-      <div class="hint">แตะปุ่มพูดครั้งเดียว (ไม่กดค้าง) แล้วพูดยาวๆ ได้: ข้อความขึ้นทีละช่วงทุกครั้งที่คุณหยุดหายใจ ไม่ต้องรอจนจบ</div></div>
+      <div class="hint">แตะปุ่มพูดครั้งเดียว (ไม่กดค้าง) แล้วพูดยาวๆ ได้: ข้อความขึ้นทีละช่วงทุกครั้งที่คุณหยุดหายใจ ไม่ต้องรอจนจบ</div>
+      <div class="hint hidden" id="live-held">งดไว้ระหว่างที่เปิด "ขัดเกลาด้วย AI" เพราะ AI ต้องเห็นข้อความทั้งหมด จึงรอจนพูดจบแล้วส่งทีเดียว</div></div>
     <label class="switch"><input type="checkbox" data-set="live"><span></span></label>
   </div>
   <div class="row">
@@ -719,7 +720,7 @@
   </div>
   <div class="row">
     <div class="text"><div class="label">ขัดเกลาด้วย AI</div>
-      <div class="hint">ส่งข้อความ (ไม่ใช่เสียง) ไปให้โมเดลภาษาแก้คำผิดก่อนวาง · ใช้กับการกดค้างพูด และการพูดยาวเมื่อปิด "พิมพ์ระหว่างพูด"</div></div>
+      <div class="hint">ส่งข้อความ (ไม่ใช่เสียง) ไปให้โมเดลภาษาแก้คำผิดก่อนวาง · ข้อความจะรอจนพูดจบแล้วส่งไปทีเดียว จึงงด "พิมพ์ระหว่างพูด"</div></div>
     <label class="switch"><input type="checkbox" id="post-polish"><span></span></label>
   </div>
   <div class="row stack hidden" id="post-fields">
@@ -849,6 +850,7 @@
     $("key").placeholder = s.hasKey ? "เว้นว่าง = ใช้ key เดิม" : "ใส่ API key";
     $("server-hint").textContent = s.serverUrl ? "" : "ขอ URL และ key ได้จากคนดูแลเซิร์ฟเวอร์";
     document.querySelectorAll("[data-set]").forEach((i) => (i.checked = !!s[i.dataset.set]));
+    $("live-held").classList.toggle("hidden", !s.liveHeld);
     // A wait typed into config.json by hand gets an option of its own.
     const unload = s.unload === null ? "off" : String(s.unload);
     $("unload").querySelector("[data-custom]")?.remove();
